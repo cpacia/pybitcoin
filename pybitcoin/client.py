@@ -59,6 +59,7 @@ class BitcoinClient(object):
                         del peer.protocol.callbacks[txid]
                         peer.protocol.load_filter()
                     del self.pending_txs[txid]
+                    del self.inventory[txid]
 
 
         d = defer.Deferred()
@@ -89,13 +90,12 @@ class BitcoinClient(object):
         Listen on an address for transactions. Since we can't validate unconfirmed
         txs we will only callback if the tx is announced by a majority of our peers.
         """
-        def on_peer_announce(tx):
-            txhash = tx.GetHash()
+        def on_peer_announce(txhash):
             if txhash in self.subscriptions[address][0] and self.subscriptions[address][0][txhash][0] != "complete":
                 self.subscriptions[address][0][txhash][0] += 1
                 if self.subscriptions[address][0][txhash][0] >= self.subscriptions[address][0][txhash][1]:
                     self.subscriptions[address][0][txhash][0] = "complete"
-                    self.subscriptions[address][1](tx)
+                    self.subscriptions[address][1](self.inventory[txhash][0])
             elif txhash not in self.subscriptions[address][0]:
                 self.subscriptions[address][0][txhash] = [1, len(self.peers)/2]
 
@@ -115,10 +115,15 @@ class BitcoinClient(object):
             for peer in self.peers:
                 del peer.protocol.callbacks[address]
                 peer.protocol.load_filter()
+            for key in self.subscriptions[address][0].keys():
+                del self.inventory[key]
             del self.subscriptions[address]
 
 
 if __name__ == "__main__":
     # Connect to testnet
-    BitcoinClient(dns_discovery(True), params="testnet")
+    client = BitcoinClient(dns_discovery(True), params="testnet")
+    def on_tx_received(tx):
+        print tx
+    reactor.callLater(4, client.subscribe_address, "n2eMqTT929pb1RDNuqEnxdaLau1rxy3efi", on_tx_received)
     reactor.run()

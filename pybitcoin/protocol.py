@@ -63,7 +63,7 @@ class BitcoinProtocol(Protocol):
                         self.callbacks[item.hash](item.hash)
                         del self.callbacks[item.hash]
                         
-                    elif item.type == 1:
+                    elif item.type == 1 and item.hash not in self.inventory:
                         self.timeouts[item.hash] = reactor.callLater(5, self.response_timeout, item.hash)
 
                         cinv = CInv()
@@ -74,6 +74,10 @@ class BitcoinProtocol(Protocol):
                         getdata_packet.inv.append(cinv)
 
                         getdata_packet.stream_serialize(self.transport)
+
+                    elif item.hash in self.inventory:
+                        self.inventory[item.hash][1](item.hash)
+
                     print "Peer %s:%s announced new %s %s" % (self.transport.getPeer().host, self.transport.getPeer().port, CInv.typemap[item.type], b2lx(item.hash))
 
             elif m.command == "tx":
@@ -82,13 +86,14 @@ class BitcoinProtocol(Protocol):
                 for out in m.tx.vout:
                     addr = str(CBitcoinAddress.from_scriptPubKey(out.scriptPubKey))
                     if addr in self.callbacks:
-                        self.callbacks[addr](m.tx)
+                        self.inventory[m.tx.GetHash()] = (m.tx, self.callbacks[addr])
+                        self.callbacks[addr](m.tx.GetHash())
 
             else:
                 print "Received message %s from %s:%s" % (m.command, self.transport.getPeer().host, self.transport.getPeer().port)
 
         except Exception:
-            print "Failed to deserialize message"
+            print "Error handling message"
 
     def on_handshake_complete(self):
         print "Connected to peer %s:%s" % (self.transport.getPeer().host, self.transport.getPeer().port)
