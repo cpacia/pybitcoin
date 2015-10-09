@@ -8,7 +8,7 @@ from bitcoin.messages import *
 from bitcoin.core import b2lx
 from bitcoin.net import CInv
 from bitcoin.wallet import CBitcoinAddress
-from messages import *
+from extensions import msg_version2, msg_filterload
 
 State = enum.Enum('State', ('CONNECTING', 'CONNECTED', 'SHUTDOWN'))
 PROTOCOL_VERSION = 70002

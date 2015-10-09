@@ -7,7 +7,7 @@ from protocol import PeerFactory
 from twisted.internet import reactor, defer
 from discovery import dns_discovery
 from binascii import unhexlify
-from messages import BloomFilter
+from extensions import BloomFilter
 from bitcoin.core import CTransaction
 from bitcoin.net import CInv
 from bitcoin.messages import msg_inv
