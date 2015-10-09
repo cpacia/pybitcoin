@@ -7,7 +7,7 @@ from protocol import PeerFactory
 from twisted.internet import reactor, defer
 from discovery import dns_discovery
 from binascii import unhexlify
-from bitcoin.bloom import CBloomFilter
+from messages import BloomFilter
 from bitcoin.core import CTransaction
 from bitcoin.net import CInv
 from bitcoin.messages import msg_inv
@@ -24,7 +24,7 @@ class BitcoinClient(object):
         self.inventory = {}
         self.pending_txs = {}
         self.subscriptions = {}
-        self.bloom_filter = CBloomFilter(10, 0.1, random.getrandbits(32), CBloomFilter.UPDATE_NONE)
+        self.bloom_filter = BloomFilter(10, 0.1, random.getrandbits(32), BloomFilter.UPDATE_NONE)
         self.connect_to_peers()
         bitcoin.SelectParams(params)
 
@@ -54,6 +54,12 @@ class BitcoinClient(object):
                 if self.pending_txs[txid][3].active():
                     self.pending_txs[txid][3].cancel()
                     self.pending_txs[txid][2].callback(True)
+                    self.bloom_filter.remove(txid)
+                    for peer in self.peers:
+                        del peer.protocol.callbacks[txid]
+                        peer.protocol.load_filter()
+                    del self.pending_txs[txid]
+
 
         d = defer.Deferred()
         transaction = CTransaction.stream_deserialize(BytesIO(unhexlify(tx)))
@@ -98,6 +104,18 @@ class BitcoinClient(object):
         for peer in self.peers:
             peer.protocol.add_inv_callback(address, on_peer_announce)
             peer.protocol.load_filter()
+
+    def unsubscribe_address(self, address):
+        """
+        Unsubscribe to an address. Will update the bloom filter to reflect its
+        state before the address was inserted.
+        """
+        if address in self.subscriptions:
+            self.bloom_filter.remove(base58.decode(address)[1:21])
+            for peer in self.peers:
+                del peer.protocol.callbacks[address]
+                peer.protocol.load_filter()
+            del self.subscriptions[address]
 
 
 if __name__ == "__main__":
