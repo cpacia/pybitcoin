@@ -3,10 +3,10 @@ import random
 import struct
 import bitcoin
 import math
+from bitcoin.core import CBlockHeader
 from bitcoin.messages import msg_version, MsgSerializable
 from bitcoin.core.serialize import VarStringSerializer
 from bitcoin.bloom import CBloomFilter
-
 
 PROTO_VERSION = 70002
 
@@ -18,8 +18,9 @@ class msg_version2(msg_version):
     default services to zero.
     """
 
-    def __init__(self, protover=PROTO_VERSION, user_agent="/pyBitcoin0.1/"):
+    def __init__(self, protover=PROTO_VERSION, user_agent="/pyBitcoin0.1/", nStartingHeight=-1):
         super(msg_version2, self).__init__(protover)
+        self.nStartingHeight = nStartingHeight
         self.relay = False
         self.nServices = 0
         self.strSubVer = user_agent
@@ -108,3 +109,56 @@ class BloomFilter(CBloomFilter):
 
             for element in self._elements:
                 self.insert(element)
+
+
+class CMerkleBlock(CBlockHeader):
+    """
+    The merkle block returned to spv clients when a filter is set on the remote peer.
+    """
+
+    __slots__ = ['vHashes', 'vFlags']
+
+    def __init__(self, nVersion=3, hashPrevBlock=b'\x00'*32, hashMerkleRoot=b'\x00'*32, nTime=0, nBits=0, nNonce=0, vHashes=(), vFlags=()):
+        """Create a new block"""
+        super(CMerkleBlock, self).__init__(nVersion, hashPrevBlock, hashMerkleRoot, nTime, nBits, nNonce)
+
+        object.__setattr__(self, 'vHashes', vHashes)
+        object.__setattr__(self, 'vFlags', vFlags)
+
+    @classmethod
+    def stream_deserialize(cls, f):
+        self = super(CMerkleBlock, cls).stream_deserialize(f)
+
+        vtx = VectorSerializer.stream_deserialize(CTransaction, f)
+        vMerkleTree = tuple(CBlock.build_merkle_tree_from_txs(vtx))
+        object.__setattr__(self, 'vMerkleTree', vMerkleTree)
+        object.__setattr__(self, 'vtx', tuple(vtx))
+
+        return self
+
+    def stream_serialize(self, f):
+        super(CBlock, self).stream_serialize(f)
+        VectorSerializer.stream_serialize(CTransaction, self.vtx, f)
+
+    def get_header(self):
+        """Return the block header
+        Returned header is a new object.
+        """
+        return CBlockHeader(nVersion=self.nVersion,
+                            hashPrevBlock=self.hashPrevBlock,
+                            hashMerkleRoot=self.hashMerkleRoot,
+                            nTime=self.nTime,
+                            nBits=self.nBits,
+                            nNonce=self.nNonce)
+
+    def GetHash(self):
+        """Return the block hash
+        Note that this is the hash of the header, not the entire serialized
+        block.
+        """
+        try:
+            return self._cached_GetHash
+        except AttributeError:
+            _cached_GetHash = self.get_header().GetHash()
+            object.__setattr__(self, '_cached_GetHash', _cached_GetHash)
+            return _cached_GetHash
