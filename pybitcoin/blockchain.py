@@ -1,9 +1,11 @@
 __author__ = 'chris'
 import sqlite3 as lite
 from bitcoin.core import CBlockHeader, CheckBlockHeader, CheckBlockHeaderError, b2lx, lx
+from bitcoin.core.serialize import uint256_from_compact
 from bitcoin.net import CBlockLocator
+from binascii import unhexlify
 
-TESTNET_CHECKPOINT = (0, 577254, "0000000000000f313c366eb2f8f12623d977a08c281e574bdc1a93eda15349e8", "", 0)
+TESTNET_CHECKPOINT = ("00", 577254, "0000000000000f313c366eb2f8f12623d977a08c281e574bdc1a93eda15349e8", "", 0)
 
 
 class BlockDatabase(object):
@@ -18,7 +20,7 @@ class BlockDatabase(object):
 
     def _create_tables(self, testnet):
         cursor = self.db.cursor()
-        cursor.execute('''CREATE TABLE blocks(totalWork INTEGER PRIMARY KEY, height INTEGER, blockID TEXT, hashOfPrevious TEXT, timestamp INTEGER)''')
+        cursor.execute('''CREATE TABLE blocks(totalWork TEXT PRIMARY KEY, height INTEGER, blockID TEXT, hashOfPrevious TEXT, timestamp INTEGER)''')
 
         cursor.execute('''CREATE INDEX blockIndx ON blocks(blockID);''')
 
@@ -30,10 +32,12 @@ class BlockDatabase(object):
     def _commit_block(self, height, block_id, hash_of_previous, bits, timestamp):
         cursor = self.db.cursor()
         cursor.execute('''SELECT totalWork FROM blocks WHERE height=?''', (height-1,))
-        total_work = cursor.fetchone()[0]
+        total_work = long_to_bytes(long(cursor.fetchone()[0], 16) + uint256_from_compact(bits))
+        while len(total_work) < 32:
+            total_work = unhexlify("00") + total_work
         cursor = self.db.cursor()
         cursor.execute('''INSERT INTO blocks(totalWork, height, blockID, hashOfPrevious, timestamp) VALUES (?,?,?,?,?)''',
-                       (total_work + bits, height, block_id, hash_of_previous, timestamp))
+                       (total_work.encode("hex"), height, block_id, hash_of_previous, timestamp))
         self.db.commit()
         self._cull()
 
@@ -100,3 +104,37 @@ class BlockDatabase(object):
 
         except CheckBlockHeaderError:
             pass
+
+def long_to_bytes (val, endianness='big'):
+    """
+    Use :ref:`string formatting` and :func:`~binascii.unhexlify` to
+    convert ``val``, a :func:`long`, to a byte :func:`str`.
+
+    :param long val: The value to pack
+
+    :param str endianness: The endianness of the result. ``'big'`` for
+      big-endian, ``'little'`` for little-endian.
+
+    If you want byte- and word-ordering to differ, you're on your own.
+
+    Using :ref:`string formatting` lets us use Python's C innards.
+    """
+
+    # one (1) hex digit per four (4) bits
+    width = val.bit_length()
+
+    # unhexlify wants an even multiple of eight (8) bits, but we don't
+    # want more digits than we need (hence the ternary-ish 'or')
+    width += 8 - ((width % 8) or 8)
+
+    # format width specifier: four (4) bits per hex digit
+    fmt = '%%0%dx' % (width // 4)
+
+    # prepend zero (0) to the width, to zero-pad the output
+    s = unhexlify(fmt % val)
+
+    if endianness == 'little':
+        # see http://stackoverflow.com/a/931095/309233
+        s = s[::-1]
+
+    return s

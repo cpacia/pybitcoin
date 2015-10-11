@@ -5,7 +5,7 @@ import bitcoin
 import math
 from bitcoin.core import CBlockHeader
 from bitcoin.messages import msg_version, MsgSerializable
-from bitcoin.core.serialize import VarStringSerializer
+from bitcoin.core.serialize import VarStringSerializer, VarIntSerializer, VectorSerializer, ser_read
 from bitcoin.bloom import CBloomFilter
 
 PROTO_VERSION = 70002
@@ -129,16 +129,27 @@ class CMerkleBlock(CBlockHeader):
     def stream_deserialize(cls, f):
         self = super(CMerkleBlock, cls).stream_deserialize(f)
 
-        vtx = VectorSerializer.stream_deserialize(CTransaction, f)
-        vMerkleTree = tuple(CBlock.build_merkle_tree_from_txs(vtx))
-        object.__setattr__(self, 'vMerkleTree', vMerkleTree)
-        object.__setattr__(self, 'vtx', tuple(vtx))
+        nHashes = VarIntSerializer.stream_deserialize(f)
+        vHashes = []
+        for i in range(nHashes):
+            vHashes.append(ser_read(f, 32))
+        nFlags = VarIntSerializer.stream_deserialize(f)
+        vFlags = []
+        for i in range(nFlags):
+            vHashes.append(ser_read(f, 1))
+        object.__setattr__(self, 'vHashes', vHashes)
+        object.__setattr__(self, 'vFlags', vFlags)
 
         return self
 
     def stream_serialize(self, f):
-        super(CBlock, self).stream_serialize(f)
-        VectorSerializer.stream_serialize(CTransaction, self.vtx, f)
+        super(CMerkleBlock, self).stream_serialize(f)
+        VarIntSerializer.stream_serialize(len(self.vHashes), f)
+        for hash in self.vHashes:
+            f.write(hash)
+        VarIntSerializer.stream_serialize(len(self.vFlags), f)
+        for byte in self.vFlags:
+            f.write(byte)
 
     def get_header(self):
         """Return the block header
@@ -162,3 +173,25 @@ class CMerkleBlock(CBlockHeader):
             _cached_GetHash = self.get_header().GetHash()
             object.__setattr__(self, '_cached_GetHash', _cached_GetHash)
             return _cached_GetHash
+
+class msg_merkleblock(MsgSerializable):
+    """
+    The MerkleBlock network message
+    """
+    command = b"merkleblock"
+
+    def __init__(self, protover=PROTO_VERSION):
+        super(msg_merkleblock, self).__init__(protover)
+        self.block = CMerkleBlock()
+
+    @classmethod
+    def msg_deser(cls, f, protover=PROTO_VERSION):
+        c = cls()
+        c.block = CMerkleBlock.stream_deserialize(f)
+        return c
+
+    def msg_ser(self, f):
+        self.block.stream_serialize(f)
+
+    def __repr__(self):
+        return "msg_block(block=%s)" % (repr(self.block))

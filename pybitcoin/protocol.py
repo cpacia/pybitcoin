@@ -9,11 +9,12 @@ from bitcoin.messages import *
 from bitcoin.core import b2lx
 from bitcoin.net import CInv
 from bitcoin.wallet import CBitcoinAddress
-from extensions import msg_version2, msg_filterload
+from extensions import msg_version2, msg_filterload, msg_merkleblock
 
 State = enum.Enum('State', ('CONNECTING', 'CONNECTED', 'SHUTDOWN'))
 PROTOCOL_VERSION = 70002
 
+messagemap["merkleblock"] = msg_merkleblock
 
 class BitcoinProtocol(Protocol):
 
@@ -143,12 +144,11 @@ class BitcoinProtocol(Protocol):
         for t in self.timeouts.values():
             t.cancel()
         if self.state != State.SHUTDOWN:
-            print "Peer unresponsive, disconnecting..."
+            print "Peer %s:%s unresponsive, disconnecting..." % (self.transport.getPeer().host, self.transport.getPeer().port)
         self.transport.loseConnection()
         self.state = State.SHUTDOWN
 
-    def download_blocks(self, callback):
-        self.callbacks["download"] = callback
+    def download_blocks(self, callback=None):
         if self.state == State.CONNECTING:
             return task.deferLater(reactor, 1, self.download_blocks)
         if self.blockchain is not None:
@@ -156,7 +156,9 @@ class BitcoinProtocol(Protocol):
             get = msg_getheaders()
             get.locator = self.blockchain.get_locator()
             get.stream_serialize(self.transport)
-            self.timeouts["download"] = reactor.callLater(10, callback)
+            if callback:
+                self.callbacks["download"] = callback
+                self.timeouts["download"] = reactor.callLater(10, callback)
 
     def send_message(self, message_obj):
         if self.state == State.CONNECTING:
