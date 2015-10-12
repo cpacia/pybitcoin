@@ -48,5 +48,14 @@ def on_tx_received(tx):
 client.subscribe_address("n2eMqTT929pb1RDNuqEnxdaLau1rxy3efi", on_tx_received)
 ```
 
+```python
+from blockchain import BlockDatabase
+
+# sync the block headers
+bd = BlockDatabase("blocks.db", testnet=True)
+BitcoinClient(dns_discovery(True), params="testnet", blockchain=bd)
+reactor.run()
+```
+
 ## TODO
-Download the block headers and verify the merkle proofs of the subscribed addresses
+Verify transactions against the partial merkle tree object

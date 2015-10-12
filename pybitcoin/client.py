@@ -138,6 +138,6 @@ class BitcoinClient(object):
 
 if __name__ == "__main__":
     # Connect to testnet
-    bd = BlockDatabase("blocks.db", testnet=False)
-    BitcoinClient(dns_discovery(False), params="mainnet", blockchain=bd)
+    bd = BlockDatabase("blocks.db", testnet=True)
+    BitcoinClient(dns_discovery(True), params="testnet", blockchain=bd)
     reactor.run()
