@@ -116,12 +116,13 @@ class CMerkleBlock(CBlockHeader):
     The merkle block returned to spv clients when a filter is set on the remote peer.
     """
 
-    __slots__ = ['vHashes', 'vFlags']
+    __slots__ = ['nTX', 'vHashes', 'vFlags']
 
-    def __init__(self, nVersion=3, hashPrevBlock=b'\x00'*32, hashMerkleRoot=b'\x00'*32, nTime=0, nBits=0, nNonce=0, vHashes=(), vFlags=()):
+    def __init__(self, nVersion=3, hashPrevBlock=b'\x00'*32, hashMerkleRoot=b'\x00'*32, nTime=0, nBits=0, nNonce=0, nTX=0, vHashes=(), vFlags=()):
         """Create a new block"""
         super(CMerkleBlock, self).__init__(nVersion, hashPrevBlock, hashMerkleRoot, nTime, nBits, nNonce)
 
+        object.__setattr__(self, 'nTX', nTX)
         object.__setattr__(self, 'vHashes', vHashes)
         object.__setattr__(self, 'vFlags', vFlags)
 
@@ -129,6 +130,7 @@ class CMerkleBlock(CBlockHeader):
     def stream_deserialize(cls, f):
         self = super(CMerkleBlock, cls).stream_deserialize(f)
 
+        nTX = struct.unpack('<L', ser_read(f, 4))
         nHashes = VarIntSerializer.stream_deserialize(f)
         vHashes = []
         for i in range(nHashes):
@@ -137,6 +139,7 @@ class CMerkleBlock(CBlockHeader):
         vFlags = []
         for i in range(nFlags):
             vHashes.append(ser_read(f, 1))
+        object.__setattr__(self, 'nTX', nTX)
         object.__setattr__(self, 'vHashes', vHashes)
         object.__setattr__(self, 'vFlags', vFlags)
 
@@ -144,6 +147,7 @@ class CMerkleBlock(CBlockHeader):
 
     def stream_serialize(self, f):
         super(CMerkleBlock, self).stream_serialize(f)
+        f.write(struct.pack('<L', self.nTX))
         VarIntSerializer.stream_serialize(len(self.vHashes), f)
         for hash in self.vHashes:
             f.write(hash)
@@ -194,4 +198,4 @@ class msg_merkleblock(MsgSerializable):
         self.block.stream_serialize(f)
 
     def __repr__(self):
-        return "msg_block(block=%s)" % (repr(self.block))
+        return "msg_merkleblock(header=%s)" % (repr(self.block.get_header()))

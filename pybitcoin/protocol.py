@@ -95,7 +95,7 @@ class BitcoinProtocol(Protocol):
                         self.inventory[item.hash][1](item.hash)
 
                     # download block
-                    elif item.type == 2:
+                    elif item.type == 2 or item.type == 3:
                         cinv = CInv()
                         cinv.type = 3
                         cinv.hash = item.hash
@@ -117,16 +117,17 @@ class BitcoinProtocol(Protocol):
                         self.callbacks[addr](m.tx.GetHash())
 
             elif m.command == "merkleblock":
-                print "downloaded merkleblock"
-                self.blockchain.process_block(m)
-
-            elif m.command == "block":
-                print "downloaded block"
+                self.blockchain.process_block(m.block)
 
             elif m.command == "headers":
                 self.timeouts["download"].cancel()
+                to_download = self.version.nStartingHeight - self.blockchain.get_height()
+                i = 1
                 for header in m.headers:
                     self.blockchain.process_block(header)
+                    if i % 50 == 0 or int((i / float(to_download))*100) == 100:
+                        print "Chain download %s%% complete" % int((i / float(to_download))*100)
+                    i += 1
                 if self.blockchain.get_height() < self.version.nStartingHeight:
                     self.download_blocks(self.callbacks["download"])
                 elif self.callbacks["download"]:

@@ -10,6 +10,12 @@ TESTNET_CHECKPOINT = {
     "difficulty_target": 439683892
 }
 
+MAINNET_CHECKPOINT = {
+    "height": 376992,
+    "hash": "0000000000000000021a4323000720f49619762e302aa921f214cd8a4adbfdb4",
+    "timestamp": 1443685990,
+    "difficulty_target": 403838066
+}
 
 class BlockDatabase(object):
 
@@ -38,9 +44,12 @@ class BlockDatabase(object):
 
         cursor.execute('''CREATE INDEX blockIndx ON blocks(blockID);''')
 
-        cursor.execute('''INSERT INTO blocks(totalWork, height, blockID, hashOfPrevious, timestamp, target) VALUES (?,?,?,?,?,?)''',
-                       (0, TESTNET_CHECKPOINT["height"], TESTNET_CHECKPOINT["hash"], "", TESTNET_CHECKPOINT["timestamp"], TESTNET_CHECKPOINT["difficulty_target"]))
-
+        if testnet:
+            cursor.execute('''INSERT INTO blocks(totalWork, height, blockID, hashOfPrevious, timestamp, target) VALUES (?,?,?,?,?,?)''',
+                           (0, TESTNET_CHECKPOINT["height"], TESTNET_CHECKPOINT["hash"], "", TESTNET_CHECKPOINT["timestamp"], TESTNET_CHECKPOINT["difficulty_target"]))
+        else:
+            cursor.execute('''INSERT INTO blocks(totalWork, height, blockID, hashOfPrevious, timestamp, target) VALUES (?,?,?,?,?,?)''',
+                           (0, MAINNET_CHECKPOINT["height"], MAINNET_CHECKPOINT["hash"], "", MAINNET_CHECKPOINT["timestamp"], MAINNET_CHECKPOINT["difficulty_target"]))
         self.db.commit()
 
     def _commit_block(self, height, block_id, hash_of_previous, bits, timestamp, target):

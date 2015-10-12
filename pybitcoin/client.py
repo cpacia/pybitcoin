@@ -52,7 +52,8 @@ class BitcoinClient(object):
         for peer in self.peers:
             if peer.protocol.version.nStartingHeight > self.blockchain.get_height():
                 print "still more to download"
-                peer.protocol.download_blocks()
+                peer.protocol.download_blocks(self.check_for_more_blocks)
+                break
 
     def _on_peer_disconnected(self, peer):
         self.peers.remove(peer)
@@ -137,6 +138,6 @@ class BitcoinClient(object):
 
 if __name__ == "__main__":
     # Connect to testnet
-    bd = BlockDatabase("blocks.db")
-    BitcoinClient(dns_discovery(True), params="testnet", blockchain=bd)
+    bd = BlockDatabase("blocks.db", testnet=False)
+    BitcoinClient(dns_discovery(False), params="mainnet", blockchain=bd)
     reactor.run()
