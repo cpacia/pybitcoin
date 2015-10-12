@@ -1,52 +1,64 @@
 __author__ = 'chris'
 import sqlite3 as lite
 from bitcoin.core import CBlockHeader, CheckBlockHeader, CheckBlockHeaderError, b2lx, lx
-from bitcoin.core.serialize import uint256_from_compact
 from bitcoin.net import CBlockLocator
-from binascii import unhexlify
 
-TESTNET_CHECKPOINT = ("00", 577254, "0000000000000f313c366eb2f8f12623d977a08c281e574bdc1a93eda15349e8", "", 0)
+TESTNET_CHECKPOINT = {
+    "height": 576576,
+    "hash": "000000000000204500050ea47622bdd55a30c7c9eab4fc42b5ffc9128fa08370",
+    "timestamp": 1444520907,
+    "difficulty_target": 439683892
+}
 
 
 class BlockDatabase(object):
+
+    """
+    This class maintains a database of block headers needed to prove a transaction exists in the blockchain. It's
+    primary key is total difficulty, hence the last entry in the database should be the tip of the chain. When a new
+    block is passed into `process_block` we validate it, look up it's parent in the chain (reject if no parent exists),
+    add the difficulty of the block to the cumulative difficulty of the parent, and insert into the database at the
+    appropriate height. Since valid blocks and orphans are both stored in the same table, blockchain reorganizations
+    are automatically handled. If an orphan chain overtakes the main chain, it's head will extend past the previous
+    head. It only keeps enough headers (5000) to guard against a reorg, everything before that is deleted.
+
+    """
 
     def __init__(self, filepath, testnet=False):
         self.db = lite.connect(filepath)
         self.db.text_factory = str
         try:
-            self._create_tables(testnet)
+            self._create_table(testnet)
         except Exception:
             pass
 
-    def _create_tables(self, testnet):
+    def _create_table(self, testnet):
         cursor = self.db.cursor()
-        cursor.execute('''CREATE TABLE blocks(totalWork TEXT PRIMARY KEY, height INTEGER, blockID TEXT, hashOfPrevious TEXT, timestamp INTEGER)''')
+        cursor.execute('''CREATE TABLE blocks(totalWork REAL PRIMARY KEY, height INTEGER, blockID TEXT, hashOfPrevious TEXT, timestamp INTEGER, target INTEGER)''')
 
         cursor.execute('''CREATE INDEX blockIndx ON blocks(blockID);''')
 
-        cursor.execute('''INSERT INTO blocks(totalWork, height, blockID, hashOfPrevious, timestamp) VALUES (?,?,?,?,?)''',
-                       (TESTNET_CHECKPOINT[0], TESTNET_CHECKPOINT[1], TESTNET_CHECKPOINT[2], TESTNET_CHECKPOINT[3], TESTNET_CHECKPOINT[4]))
+        cursor.execute('''INSERT INTO blocks(totalWork, height, blockID, hashOfPrevious, timestamp, target) VALUES (?,?,?,?,?,?)''',
+                       (0, TESTNET_CHECKPOINT["height"], TESTNET_CHECKPOINT["hash"], "", TESTNET_CHECKPOINT["timestamp"], TESTNET_CHECKPOINT["difficulty_target"]))
 
         self.db.commit()
 
-    def _commit_block(self, height, block_id, hash_of_previous, bits, timestamp):
+    def _commit_block(self, height, block_id, hash_of_previous, bits, timestamp, target):
         cursor = self.db.cursor()
         cursor.execute('''SELECT totalWork FROM blocks WHERE height=?''', (height-1,))
-        total_work = long_to_bytes(long(cursor.fetchone()[0], 16) + uint256_from_compact(bits))
-        while len(total_work) < 32:
-            total_work = unhexlify("00") + total_work
+        total_work = cursor.fetchone()[0] + CBlockHeader.calc_difficulty(bits)
         cursor = self.db.cursor()
-        cursor.execute('''INSERT INTO blocks(totalWork, height, blockID, hashOfPrevious, timestamp) VALUES (?,?,?,?,?)''',
-                       (total_work.encode("hex"), height, block_id, hash_of_previous, timestamp))
+        cursor.execute('''INSERT INTO blocks(totalWork, height, blockID, hashOfPrevious, timestamp, target) VALUES (?,?,?,?,?,?)''',
+                       (total_work, height, block_id, hash_of_previous, timestamp, target))
         self.db.commit()
         self._cull()
 
     def _get_parent_height(self, header):
         cursor = self.db.cursor()
         cursor.execute('''SELECT height FROM blocks WHERE blockID=?''', (b2lx(header.hashPrevBlock),))
-        height = cursor.fetchone()[0]
+        height = cursor.fetchone()
         if height is not None:
-            return height
+            return height[0]
         else:
             return None
 
@@ -63,9 +75,56 @@ class BlockDatabase(object):
             for i in range(end-start):
                 cursor.execute('''DELETE FROM blocks WHERE height=?''', (start+i,))
 
+    def _get_parent(self, block_id):
+        cursor = self.db.cursor()
+        cursor.execute('''SELECT hashOfPrevious FROM blocks WHERE blockID=?;''', (block_id, ))
+        return cursor.fetchone()[0]
+
+    def _check_timestamp(self, timestamp):
+        cursor = self.db.cursor()
+        cursor.execute('''SELECT blockID FROM blocks WHERE totalWork = (SELECT MAX(totalWork) FROM blocks);''')
+        tip = cursor.fetchone()[0]
+        if self.get_height() - self._get_starting_height() > 10:
+            timestamps = []
+            timestamps.append(self.get_timestamp(tip))
+            for i in range(10):
+                tip = self._get_parent(tip)
+                timestamps.append(self.get_timestamp(tip))
+            if timestamp <= timestamps[4]:
+                raise CheckBlockHeaderError("Invalid Timestamp")
+
+    def _check_difficulty_target(self, header):
+        parent = b2lx(header.hashPrevBlock)
+        target = self.get_difficulty_target(parent)
+        if (self.get_height() + 1) % 2016 == 0:
+            end = self.get_timestamp(parent)
+            min, max = (302400, 4838400)
+            for i in range(2015):
+                parent = self._get_parent(parent)
+            start = self.get_timestamp(parent)
+            difference = end - start
+            if difference < min:
+                difference = min
+            elif difference > max:
+                difference = max
+            target = target * difference / (60 * 60 * 24 * 14)
+        if header.nBits < target:
+            raise CheckBlockHeaderError("Target difficutly is incorrect")
+        return target
+
     def get_block_id(self, height):
         cursor = self.db.cursor()
         cursor.execute('''SELECT blockID FROM blocks WHERE height = ?;''', (height,))
+        return cursor.fetchone()[0]
+
+    def get_difficulty_target(self, block_id):
+        cursor = self.db.cursor()
+        cursor.execute('''SELECT target FROM blocks WHERE blockID=?''', (block_id,))
+        return cursor.fetchone()[0]
+
+    def get_timestamp(self, block_id):
+        cursor = self.db.cursor()
+        cursor.execute('''SELECT timestamp FROM blocks WHERE blockID = ?;''', (block_id,))
         return cursor.fetchone()[0]
 
     def get_height(self):
@@ -75,66 +134,44 @@ class BlockDatabase(object):
 
     def get_locator(self):
         """
-        Given the db setup, this function may return orphans. This isn't the end of the world, however, as
-        it just means the remote peer will send more blocks than we need.
+        Get a block locator object to give our remote peer when fetching headers.
         """
-        # TODO: add some logic to avoid returning orphans
 
         locator = CBlockLocator()
+        parent = self.get_block_id(self.get_height())
+
+        def rollback(parent, n):
+            for i in range(n):
+                parent = self._get_parent(parent)
+            return parent
 
         step = -1
         start = 0
-        for i in range(self.get_height(), self._get_starting_height()-1, step):
+        height = self.get_height()
+        while(True):
             if start >= 10:
                 step *= 2
                 start = 0
-            locator.vHave.append(lx(self.get_block_id(i)))
+            locator.vHave.append(lx(parent))
+            parent = rollback(parent, abs(step))
             start += 1
+            height += step
+            if height <= self._get_starting_height() + abs(step):
+                break
         return locator
 
     def process_block(self, block):
+        """
+        A block (or header) passed into this function will be added into the database only if it passes all
+        validity checks.
+        """
         try:
             header = block if isinstance(block, CBlockHeader) else block.get_header()
             CheckBlockHeader(header, True)
-            # TODO: reject if timestamp is median of last 11 blocks
-            # TODO: check that nBits value matches the difficulty rules
+            # self._check_timestamp(header.nTime) # not working on testnet?
+            target = self._check_difficulty_target(header)
             h = self._get_parent_height(header)
             if h is not None:
-                self._commit_block(h + 1, b2lx(header.GetHash()), b2lx(header.hashPrevBlock), header.nBits, header.nTime)
-
-        except CheckBlockHeaderError:
-            pass
-
-def long_to_bytes (val, endianness='big'):
-    """
-    Use :ref:`string formatting` and :func:`~binascii.unhexlify` to
-    convert ``val``, a :func:`long`, to a byte :func:`str`.
-
-    :param long val: The value to pack
-
-    :param str endianness: The endianness of the result. ``'big'`` for
-      big-endian, ``'little'`` for little-endian.
-
-    If you want byte- and word-ordering to differ, you're on your own.
-
-    Using :ref:`string formatting` lets us use Python's C innards.
-    """
-
-    # one (1) hex digit per four (4) bits
-    width = val.bit_length()
-
-    # unhexlify wants an even multiple of eight (8) bits, but we don't
-    # want more digits than we need (hence the ternary-ish 'or')
-    width += 8 - ((width % 8) or 8)
-
-    # format width specifier: four (4) bits per hex digit
-    fmt = '%%0%dx' % (width // 4)
-
-    # prepend zero (0) to the width, to zero-pad the output
-    s = unhexlify(fmt % val)
-
-    if endianness == 'little':
-        # see http://stackoverflow.com/a/931095/309233
-        s = s[::-1]
-
-    return s
+                self._commit_block(h + 1, b2lx(header.GetHash()), b2lx(header.hashPrevBlock), header.nBits, header.nTime, target)
+        except CheckBlockHeaderError, e:
+            print e.message

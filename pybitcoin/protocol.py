@@ -108,7 +108,6 @@ class BitcoinProtocol(Protocol):
                     print "Peer %s:%s announced new %s %s" % (self.transport.getPeer().host, self.transport.getPeer().port, CInv.typemap[item.type], b2lx(item.hash))
 
             elif m.command == "tx":
-                print "Downloaded tx"
                 if m.tx.GetHash() in self.timeouts:
                     self.timeouts[m.tx.GetHash()].cancel()
                 for out in m.tx.vout:
@@ -117,16 +116,20 @@ class BitcoinProtocol(Protocol):
                         self.inventory[m.tx.GetHash()] = (m.tx, self.callbacks[addr])
                         self.callbacks[addr](m.tx.GetHash())
 
+            elif m.command == "merkleblock":
+                print "downloaded merkleblock"
+                self.blockchain.process_block(m)
+
             elif m.command == "block":
-                print m.serialize().encode("hex")
+                print "downloaded block"
 
             elif m.command == "headers":
+                self.timeouts["download"].cancel()
                 for header in m.headers:
                     self.blockchain.process_block(header)
                 if self.blockchain.get_height() < self.version.nStartingHeight:
                     self.download_blocks(self.callbacks["download"])
                 elif self.callbacks["download"]:
-                    self.timeouts["download"].cancel()
                     self.callbacks["download"]()
 
             else:
