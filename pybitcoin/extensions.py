@@ -7,6 +7,7 @@ from bitcoin.core import CBlockHeader
 from bitcoin.messages import msg_version, MsgSerializable
 from bitcoin.core.serialize import VarStringSerializer, VarIntSerializer, VectorSerializer, ser_read
 from bitcoin.bloom import CBloomFilter
+from hashlib import sha256
 
 PROTO_VERSION = 70002
 
@@ -128,17 +129,24 @@ class CMerkleBlock(CBlockHeader):
 
     @classmethod
     def stream_deserialize(cls, f):
+
+        def bits(f, n):
+            ret = []
+            bytes = (ord(b) for b in f.read(n))
+            for b in bytes:
+                for i in xrange(8):
+                    ret.append((b >> i) & 1)
+            return ret
+
         self = super(CMerkleBlock, cls).stream_deserialize(f)
 
-        nTX = struct.unpack('<L', ser_read(f, 4))
+        nTX = struct.unpack('<L', ser_read(f, 4))[0]
         nHashes = VarIntSerializer.stream_deserialize(f)
         vHashes = []
         for i in range(nHashes):
             vHashes.append(ser_read(f, 32))
         nFlags = VarIntSerializer.stream_deserialize(f)
-        vFlags = []
-        for i in range(nFlags):
-            vHashes.append(ser_read(f, 1))
+        vFlags = bits(f, nFlags)
         object.__setattr__(self, 'nTX', nTX)
         object.__setattr__(self, 'vHashes', vHashes)
         object.__setattr__(self, 'vFlags', vFlags)
@@ -151,9 +159,54 @@ class CMerkleBlock(CBlockHeader):
         VarIntSerializer.stream_serialize(len(self.vHashes), f)
         for hash in self.vHashes:
             f.write(hash)
-        VarIntSerializer.stream_serialize(len(self.vFlags), f)
-        for byte in self.vFlags:
-            f.write(byte)
+        VarIntSerializer.stream_serialize(len(self.vFlags)/8, f)
+        bin_string = ""
+        for bit in self.vFlags:
+            bin_string += str(bit)
+            if len(bin_string) == 8:
+                f.write(struct.pack('B', int(bin_string[::-1], 2)))
+                bin_string = ""
+
+    def get_matched_txs(self):
+        """
+        Return a list of transaction hashes that matched the filter. These txs
+        have been validated against the merkle tree structure and are definitely
+        in the block. However, the block hash still needs to be checked against
+        the best chain in the block database.
+        """
+        # TODO: perform a number of checks to make sure everything is formatted properly
+        def getTreeWidth(transaction_count, height):
+            return (transaction_count + (1 << height) - 1) >> height
+
+        matched_hashes = []
+
+        def recursive_extract_hashes(height, pos):
+            parent_of_match = bool(self.vFlags.pop(0))
+            if height == 0 or not parent_of_match:
+                hash = self.vHashes.pop(0)
+                if height == 0 and parent_of_match:
+                    matched_hashes.append(hash)
+                return hash
+            else:
+                left = recursive_extract_hashes(height - 1, pos * 2)
+                if pos * 2 + 1 < getTreeWidth(self.nTX, height-1):
+                    right = recursive_extract_hashes(height - 1, pos * 2 + 1)
+                    if left == right:
+                        raise Exception("Invalid Merkle Tree")
+                else:
+                    right = left
+                return sha256(sha256(left+right).digest()).digest()
+
+        height = 0
+        while getTreeWidth(self.nTX, height) > 1:
+            height += 1
+
+        calculated_root = recursive_extract_hashes(height, 0)
+        if calculated_root == self.get_header().hashMerkleRoot:
+            return matched_hashes
+        else:
+            return None
+
 
     def get_header(self):
         """Return the block header
