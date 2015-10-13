@@ -18,9 +18,10 @@ messagemap["merkleblock"] = msg_merkleblock
 
 class BitcoinProtocol(Protocol):
 
-    def __init__(self, user_agent, inventory, bloom_filter, blockchain):
+    def __init__(self, user_agent, inventory, subscriptions, bloom_filter, blockchain):
         self.user_agent = user_agent
         self.inventory = inventory
+        self.subscriptions = subscriptions
         self.bloom_filter = bloom_filter
         self.blockchain = blockchain
         self.timeouts = {}
@@ -72,12 +73,11 @@ class BitcoinProtocol(Protocol):
 
             elif m.command == "inv":
                 for item in m.inv:
-                    # callback tx broadcast
-                    if item.type == 1 and item.hash in self.callbacks:
-                        self.callbacks[item.hash](item.hash)
-                        del self.callbacks[item.hash]
+                    # callback tx
+                    if item.type == 1 and item.hash in self.subscriptions:
+                        self.subscriptions[item.hash]["callback"](item.hash)
 
-                    # callback subscription and download tx
+                    # download tx and check subscription
                     elif item.type == 1 and item.hash not in self.inventory:
                         self.timeouts[item.hash] = reactor.callLater(5, self.response_timeout, item.hash)
 
@@ -89,10 +89,6 @@ class BitcoinProtocol(Protocol):
                         getdata_packet.inv.append(cinv)
 
                         getdata_packet.stream_serialize(self.transport)
-
-                    # callback subscription but don't download (already have it in inventory)
-                    elif item.type == 1 and item.hash in self.inventory:
-                        self.inventory[item.hash][1](item.hash)
 
                     # download block
                     elif item.type == 2 or item.type == 3:
@@ -112,12 +108,39 @@ class BitcoinProtocol(Protocol):
                     self.timeouts[m.tx.GetHash()].cancel()
                 for out in m.tx.vout:
                     addr = str(CBitcoinAddress.from_scriptPubKey(out.scriptPubKey))
-                    if addr in self.callbacks:
-                        self.inventory[m.tx.GetHash()] = (m.tx, self.callbacks[addr])
-                        self.callbacks[addr](m.tx.GetHash())
+                    if addr in self.subscriptions:
+                        if m.tx.GetHash() not in self.subscriptions:
+                            self.subscriptions[m.tx.GetHash()] = {
+                                "announced": 0,
+                                "ann_threshold": self.subscriptions[addr][0],
+                                "confirmations": 0,
+                                "callback": self.subscriptions[addr][1],
+                                "in_blocks": self.inventory[m.tx.GetHash()] if m.tx.GetHash() in self.inventory else [],
+                                "tx": m.tx
+                            }
+                            self.subscriptions[addr][1](m.tx.GetHash())
+                        if m.tx.GetHash() in self.inventory:
+                            del self.inventory[m.tx.GetHash()]
 
             elif m.command == "merkleblock":
                 self.blockchain.process_block(m.block)
+                if self.blockchain is not None:
+                    # check for block inclusion of subscribed txs
+                    for match in m.block.get_matched_txs():
+                        if match in self.subscriptions:
+                            self.subscriptions[match]["in_blocks"].append(m.block.GetHash())
+                        else:
+                            # stick the hash here in case this is a tx we missed on broadcast.
+                            # when the tx comes over the wire after this block, we will append this hash.
+                            self.inventory[match] = [m.block.GetHash()]
+                    # run through subscriptions and callback with updated confirmations
+                    for txid in self.subscriptions:
+                        if len(txid) == 32:
+                            confirms = []
+                            for block in self.subscriptions[txid]["in_blocks"]:
+                                confirms.append(self.blockchain.get_confirmations(block))
+                            self.subscriptions[txid]["confirmations"] = max(confirms)
+                            self.subscriptions[txid]["callback"](txid)
 
             elif m.command == "headers":
                 self.timeouts["download"].cancel()
@@ -172,9 +195,6 @@ class BitcoinProtocol(Protocol):
     def load_filter(self):
         msg_filterload(filter=self.bloom_filter).stream_serialize(self.transport)
 
-    def add_inv_callback(self, key, cb):
-        self.callbacks[key] = cb
-
     def connectionLost(self, reason):
         self.state = State.SHUTDOWN
         print "Connection to %s:%s closed" % (self.transport.getPeer().host, self.transport.getPeer().port)
@@ -182,10 +202,11 @@ class BitcoinProtocol(Protocol):
 
 class PeerFactory(ClientFactory):
 
-    def __init__(self, params, user_agent, inventory, bloom_filter, disconnect_cb, blockchain):
+    def __init__(self, params, user_agent, inventory, subscriptions, bloom_filter, disconnect_cb, blockchain):
         self.params = params
         self.user_agent = user_agent
         self.inventory = inventory
+        self.subscriptions = subscriptions
         self.bloom_filter = bloom_filter
         self.cb = disconnect_cb
         self.protocol = None
@@ -193,7 +214,7 @@ class PeerFactory(ClientFactory):
         bitcoin.SelectParams(params)
 
     def buildProtocol(self, addr):
-        self.protocol = BitcoinProtocol(self.user_agent, self.inventory, self.bloom_filter, self.blockchain)
+        self.protocol = BitcoinProtocol(self.user_agent, self.inventory, self.subscriptions, self.bloom_filter, self.blockchain)
         return self.protocol
 
     def clientConnectionFailed(self, connector, reason):

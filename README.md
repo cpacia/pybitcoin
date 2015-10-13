@@ -2,7 +2,10 @@
 Ultra-lightweight bitcoin client and library
 
 This library allows you to create a bitcoin client that connects directly to the p2p network. 
-It handles the bare minimum network messages necessary to connect to the network, broadcast and download transactions.
+It handles the bare minimum network messages necessary to connect to the network, broadcast and download transactions,
+and verify the merkle proofs.
+
+[Warning: This library has not been peer reviewed and is missing unit tests. Do not use on the mainnet]
 
 ## Installation
 
@@ -42,8 +45,8 @@ client.broadcast_tx(tx).addCallback(on_broadcast_complete)
 
 ```python
 # subscribe to an address
-def on_tx_received(tx):
-    print tx
+def on_tx_received(tx, in_block, confirmations):
+    print tx, in_block, confirmations
 
 client.subscribe_address("n2eMqTT929pb1RDNuqEnxdaLau1rxy3efi", on_tx_received)
 ```
@@ -56,6 +59,3 @@ bd = BlockDatabase("blocks.db", testnet=True)
 BitcoinClient(dns_discovery(True), params="testnet", blockchain=bd)
 reactor.run()
 ```
-
-## TODO
-Verify transactions against the partial merkle tree object

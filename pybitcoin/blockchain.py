@@ -141,6 +141,31 @@ class BlockDatabase(object):
         cursor.execute('''SELECT height FROM blocks WHERE totalWork = (SELECT MAX(totalWork) FROM blocks);''')
         return cursor.fetchone()[0]
 
+    def get_block_height(self, block_id):
+        cursor = self.db.cursor()
+        cursor.execute('''SELECT height FROM blocks WHERE blockID=?;''', (block_id,))
+        ret = cursor.fetchone()
+        return ret[0] if ret is not None else None
+
+    def get_confirmations(self, block_id):
+        """
+        Given a block id, return the number of confirmations
+        """
+        block_height = self.get_block_height(b2lx(block_id))
+        if block_height is None:
+            return 0
+        tip_height = self.get_height()
+
+        parent = self.get_block_id(self.get_height())
+        for i in range(tip_height - block_height):
+            parent = self._get_parent(parent)
+
+        parent_height = self.get_block_height(parent)
+        if parent_height == block_height:
+            return tip_height - block_height + 1
+        else:
+            return 0
+
     def get_locator(self):
         """
         Get a block locator object to give our remote peer when fetching headers.

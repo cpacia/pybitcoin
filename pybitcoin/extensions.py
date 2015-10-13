@@ -207,7 +207,6 @@ class CMerkleBlock(CBlockHeader):
         else:
             return None
 
-
     def get_header(self):
         """Return the block header
         Returned header is a new object.

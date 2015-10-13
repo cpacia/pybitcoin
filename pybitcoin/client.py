@@ -38,7 +38,7 @@ class BitcoinClient(object):
             for i in range(self.max_connections - len(self.peers)):
                 if len(self.addrs) > 0:
                     addr = self.addrs.pop(0)
-                    peer = PeerFactory(self.params, self.user_agent, self.inventory,
+                    peer = PeerFactory(self.params, self.user_agent, self.inventory, self.subscriptions,
                                        self.bloom_filter, self._on_peer_disconnected, self.blockchain)
                     reactor.connectTCP(addr[0], addr[1], peer)
                     self.peers.append(peer)
@@ -65,18 +65,11 @@ class BitcoinClient(object):
         announce it via inv packets before calling back.
         """
         def on_peer_anncounce(txid):
-            self.pending_txs[txid][0] += 1
-            if self.pending_txs[txid][0] >= self.pending_txs[txid][1]:
-                if self.pending_txs[txid][3].active():
-                    self.pending_txs[txid][3].cancel()
-                    self.pending_txs[txid][2].callback(True)
-                    self.bloom_filter.remove(txid)
-                    for peer in self.peers:
-                        del peer.protocol.callbacks[txid]
-                        peer.protocol.load_filter()
-                    del self.pending_txs[txid]
-                    del self.inventory[txid]
-
+            self.subscriptions[txhash]["announced"] += 1
+            if self.subscriptions[txhash]["announced"] >= self.subscriptions[txhash]["ann_threshold"]:
+                if self.subscriptions[txid]["timeout"].active():
+                    self.subscriptions[txid]["timeout"].cancel()
+                    self.subscriptions[txid]["deferred"].callback(True)
 
         d = defer.Deferred()
         transaction = CTransaction.stream_deserialize(BytesIO(unhexlify(tx)))
@@ -91,11 +84,18 @@ class BitcoinClient(object):
         inv_packet.inv.append(cinv)
 
         self.bloom_filter.insert(txhash)
-        self.pending_txs[txhash] = [0, len(self.peers)/4, d, reactor.callLater(10, d.callback, False)]
+        self.subscriptions[txhash] = {
+            "announced": 0,
+            "ann_threshold": len(self.peers)/4,
+            "callback": on_peer_anncounce,
+            "confirmations": 0,
+            "in_blocks": [],
+            "deferred": d,
+            "timeout": reactor.callLater(10, d.callback, False)
+        }
 
         for peer in self.peers[len(self.peers)/2:]:
             peer.protocol.load_filter()
-            peer.protocol.add_inv_callback(txhash, on_peer_anncounce)
         for peer in self.peers[:len(self.peers)/2]:
             peer.protocol.send_message(inv_packet)
 
@@ -106,19 +106,20 @@ class BitcoinClient(object):
         Listen on an address for transactions. Since we can't validate unconfirmed
         txs we will only callback if the tx is announced by a majority of our peers.
         """
-        def on_peer_announce(txhash):
-            if txhash in self.subscriptions[address][0] and self.subscriptions[address][0][txhash][0] != "complete":
-                self.subscriptions[address][0][txhash][0] += 1
-                if self.subscriptions[address][0][txhash][0] >= self.subscriptions[address][0][txhash][1]:
-                    self.subscriptions[address][0][txhash][0] = "complete"
-                    self.subscriptions[address][1](self.inventory[txhash][0])
-            elif txhash not in self.subscriptions[address][0]:
-                self.subscriptions[address][0][txhash] = [1, len(self.peers)/2]
 
-        self.subscriptions[address] = [{}, callback]
+        def on_peer_announce(txhash):
+            if self.subscriptions[txhash]["announced"] < self.subscriptions[txhash]["ann_threshold"]:
+                self.subscriptions[txhash]["announced"] += 1
+                if self.subscriptions[txhash]["announced"] >= self.subscriptions[txhash]["ann_threshold"]:
+                    callback(self.subscriptions[txhash]["tx"], self.subscriptions[txhash]["confirmations"])
+                    self.subscriptions[txhash]["last_confirmation"] = self.subscriptions[txhash]["confirmations"]
+            elif self.subscriptions[txhash]["confirmations"] > self.subscriptions[txhash]["last_confirmation"]:
+                self.subscriptions[txhash]["last_confirmation"] = self.subscriptions[txhash]["confirmations"]
+                callback(self.subscriptions[txhash]["tx"], self.subscriptions[txhash]["in_blocks"], self.subscriptions[txhash]["confirmations"])
+
+        self.subscriptions[address] = (len(self.peers)/2, on_peer_announce)
         self.bloom_filter.insert(base58.decode(address)[1:21])
         for peer in self.peers:
-            peer.protocol.add_inv_callback(address, on_peer_announce)
             peer.protocol.load_filter()
 
     def unsubscribe_address(self, address):
@@ -129,10 +130,7 @@ class BitcoinClient(object):
         if address in self.subscriptions:
             self.bloom_filter.remove(base58.decode(address)[1:21])
             for peer in self.peers:
-                del peer.protocol.callbacks[address]
                 peer.protocol.load_filter()
-            for key in self.subscriptions[address][0].keys():
-                del self.inventory[key]
             del self.subscriptions[address]
 
 
