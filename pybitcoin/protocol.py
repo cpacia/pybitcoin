@@ -91,7 +91,7 @@ class BitcoinProtocol(Protocol):
                         getdata_packet.stream_serialize(self.transport)
 
                     # download block
-                    elif item.type == 2 or item.type == 3:
+                    elif item.type == 3:
                         cinv = CInv()
                         cinv.type = 3
                         cinv.hash = item.hash
@@ -143,8 +143,11 @@ class BitcoinProtocol(Protocol):
                             self.subscriptions[txid]["callback"](txid)
 
             elif m.command == "headers":
-                self.timeouts["download"].cancel()
                 to_download = self.version.nStartingHeight - self.blockchain.get_height()
+                if len(m.headers) > to_download:
+                    self.timeouts["download"].cancel()
+                    self.callbacks["download"]()
+                    self.response_timeout("download")
                 i = 1
                 for header in m.headers:
                     self.blockchain.process_block(header)
@@ -154,6 +157,7 @@ class BitcoinProtocol(Protocol):
                 if self.blockchain.get_height() < self.version.nStartingHeight:
                     self.download_blocks(self.callbacks["download"])
                 elif self.callbacks["download"]:
+                    self.timeouts["download"].cancel()
                     self.callbacks["download"]()
 
             else:
@@ -180,12 +184,15 @@ class BitcoinProtocol(Protocol):
             return task.deferLater(reactor, 1, self.download_blocks)
         if self.blockchain is not None:
             print "Downloading blocks from %s:%s" % (self.transport.getPeer().host, self.transport.getPeer().port)
-            get = msg_getheaders()
+            if len(self.subscriptions) > 0:
+                get = msg_getblocks()
+            else:
+                get = msg_getheaders()
             get.locator = self.blockchain.get_locator()
             get.stream_serialize(self.transport)
             if callback:
                 self.callbacks["download"] = callback
-                self.timeouts["download"] = reactor.callLater(10, callback)
+                self.timeouts["download"] = reactor.callLater(30, callback)
 
     def send_message(self, message_obj):
         if self.state == State.CONNECTING:
