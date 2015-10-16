@@ -9,9 +9,10 @@ TESTNET3_SEEDS = [
 MAINNET_SEEDS = [
     "seed.bitcoin.sipa.be",
     "dnsseed.bluematt.me",
-    "dnsseed.bitcoin.dashjr.org",
+    #"dnsseed.bitcoin.dashjr.org",
     "seed.bitcoinstats.com",
     "seed.bitnodes.io"
+
 ]
 
 

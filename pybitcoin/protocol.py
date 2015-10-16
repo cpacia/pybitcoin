@@ -9,12 +9,14 @@ from bitcoin.messages import *
 from bitcoin.core import b2lx
 from bitcoin.net import CInv
 from bitcoin.wallet import CBitcoinAddress
-from extensions import msg_version2, msg_filterload, msg_merkleblock
+from extensions import msg_version2, msg_filterload, msg_merkleblock, MsgHeader
+from io import BytesIO
 
 State = enum.Enum('State', ('CONNECTING', 'CONNECTED', 'SHUTDOWN'))
 PROTOCOL_VERSION = 70002
 
 messagemap["merkleblock"] = msg_merkleblock
+
 
 class BitcoinProtocol(Protocol):
 
@@ -39,15 +41,13 @@ class BitcoinProtocol(Protocol):
 
     def dataReceived(self, data):
         self.buffer += data
-        # if self.buffer.length >= sizeof(message header)
-        #   messageHeader := MessageHeader.deserialize(self.buffer)
-        #   if messageHeader.payloadLength > someBigNumber
-        #     throw DropConnection
-        #   if self.buffer.length < messageHeader.payloadLength
-        #     return
+        header = MsgHeader.from_bytes(self.buffer)
+        if len(self.buffer) < header.msglen + 24:
+            return
         try:
-            m = MsgSerializable.from_bytes(self.buffer)
-            self.buffer = ""
+            stream = BytesIO(self.buffer)
+            m = MsgSerializable.stream_deserialize(stream)
+            self.buffer = stream.read()
             if m.command == "verack":
                 self.timeouts["verack"].cancel()
                 del self.timeouts["verack"]
@@ -56,7 +56,7 @@ class BitcoinProtocol(Protocol):
 
             elif m.command == "version":
                 self.version = m
-                if m.nVersion < 70001:
+                if m.nVersion < 70001 or m.nServices != 1:
                     self.transport.loseConnection()
                 self.timeouts["version"].cancel()
                 del self.timeouts["version"]
@@ -91,7 +91,7 @@ class BitcoinProtocol(Protocol):
                         getdata_packet.stream_serialize(self.transport)
 
                     # download block
-                    elif item.type == 3:
+                    elif item.type == 2 or item.type == 3:
                         cinv = CInv()
                         cinv.type = 3
                         cinv.hash = item.hash
@@ -123,8 +123,8 @@ class BitcoinProtocol(Protocol):
                             del self.inventory[m.tx.GetHash()]
 
             elif m.command == "merkleblock":
-                self.blockchain.process_block(m.block)
                 if self.blockchain is not None:
+                    self.blockchain.process_block(m.block)
                     # check for block inclusion of subscribed txs
                     for match in m.block.get_matched_txs():
                         if match in self.subscriptions:
@@ -148,6 +148,7 @@ class BitcoinProtocol(Protocol):
                     self.timeouts["download"].cancel()
                     self.callbacks["download"]()
                     self.response_timeout("download")
+                    return
                 i = 1
                 for header in m.headers:
                     self.blockchain.process_block(header)
@@ -160,10 +161,16 @@ class BitcoinProtocol(Protocol):
                     self.timeouts["download"].cancel()
                     self.callbacks["download"]()
 
+            elif m.command == "ping":
+                msg_pong(nonce=m.nonce).stream_serialize(self.transport)
+
             else:
                 print "Received message %s from %s:%s" % (m.command, self.transport.getPeer().host, self.transport.getPeer().port)
-        except Exception:
-            pass
+
+            if len(self.buffer) > 0: self.dataReceived("")
+        except Exception, e:
+            print e.message
+
 
     def on_handshake_complete(self):
         print "Connected to peer %s:%s" % (self.transport.getPeer().host, self.transport.getPeer().port)
@@ -173,7 +180,8 @@ class BitcoinProtocol(Protocol):
     def response_timeout(self, id):
         del self.timeouts[id]
         for t in self.timeouts.values():
-            t.cancel()
+            if t.active():
+                t.cancel()
         if self.state != State.SHUTDOWN:
             print "Peer %s:%s unresponsive, disconnecting..." % (self.transport.getPeer().host, self.transport.getPeer().port)
         self.transport.loseConnection()

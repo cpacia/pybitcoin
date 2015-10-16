@@ -207,5 +207,5 @@ class BlockDatabase(object):
             h = self._get_parent_height(header)
             if h is not None:
                 self._commit_block(h + 1, b2lx(header.GetHash()), b2lx(header.hashPrevBlock), header.nBits, header.nTime, target)
-        except CheckBlockHeaderError, e:
-            print e.message
+        except Exception, e:
+            pass

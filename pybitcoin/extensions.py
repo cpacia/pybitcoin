@@ -3,13 +3,46 @@ import random
 import struct
 import bitcoin
 import math
-from bitcoin.core import CBlockHeader
+from bitcoin.core import CBlockHeader, b2x
 from bitcoin.messages import msg_version, MsgSerializable
-from bitcoin.core.serialize import VarStringSerializer, VarIntSerializer, VectorSerializer, ser_read
+from bitcoin.core.serialize import VarStringSerializer, VarIntSerializer, ser_read
 from bitcoin.bloom import CBloomFilter
 from hashlib import sha256
+from io import BytesIO
 
 PROTO_VERSION = 70002
+
+
+class MsgHeader(MsgSerializable):
+    """
+    A class for just the message header.
+    """
+
+    def __init__(self, command, msglen, checksum):
+        self.params = bitcoin.params.MESSAGE_START
+        self.command = command
+        self.msglen = msglen
+        self.checksum = checksum
+
+    @classmethod
+    def from_bytes(cls, b, protover=PROTO_VERSION):
+        f = BytesIO(b)
+        return MsgHeader.stream_deserialize(f, protover=protover)
+
+    @classmethod
+    def stream_deserialize(cls, f, protover=PROTO_VERSION):
+        recvbuf = ser_read(f, 4 + 12 + 4 + 4)
+
+        # check magic
+        if recvbuf[:4] != bitcoin.params.MESSAGE_START:
+            raise ValueError("Invalid message start '%s', expected '%s'" %
+                             (b2x(recvbuf[:4]), b2x(bitcoin.params.MESSAGE_START)))
+
+        # remaining header fields: command, msg length, checksum
+        command = recvbuf[4:4+12].split(b"\x00", 1)[0]
+        msglen = struct.unpack(b"<i", recvbuf[4+12:4+12+4])[0]
+        checksum = recvbuf[4+12+4:4+12+4+4]
+        return MsgHeader(command, msglen, checksum)
 
 
 class msg_version2(msg_version):
@@ -26,6 +59,8 @@ class msg_version2(msg_version):
         self.nServices = 0
         self.strSubVer = user_agent
         self.addrFrom.nServices = 0
+        self.addrFrom.ip = "127.0.0.1"
+        self.addrTo.ip = "127.0.0.1"
 
     def msg_ser(self, f):
         f.write(struct.pack(b"<i", self.nVersion))
