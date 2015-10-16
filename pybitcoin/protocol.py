@@ -29,6 +29,7 @@ class BitcoinProtocol(Protocol):
         self.timeouts = {}
         self.callbacks = {}
         self.state = State.CONNECTING
+        self.version = None
         self.buffer = ""
 
     def connectionMade(self):

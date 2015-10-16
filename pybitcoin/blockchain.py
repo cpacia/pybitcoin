@@ -7,7 +7,7 @@ from bitcoin.core.serialize import uint256_from_compact, compact_from_uint256
 TESTNET_CHECKPOINT = {
     "height": 576576,
     "hash": "000000000000204500050ea47622bdd55a30c7c9eab4fc42b5ffc9128fa08370",
-    "timestamp": 1444520907,
+    "timestamp": 1444142008,
     "difficulty_target": 439683892
 }
 
