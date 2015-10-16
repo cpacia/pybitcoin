@@ -143,22 +143,21 @@ class BitcoinProtocol(Protocol):
                             self.subscriptions[txid]["callback"](txid)
 
             elif m.command == "headers":
-                to_download = self.version.nStartingHeight - self.blockchain.get_height()
-                if len(m.headers) > to_download:
+                if self.timeouts["download"].active():
                     self.timeouts["download"].cancel()
-                    self.callbacks["download"]()
-                    self.response_timeout("download")
-                    return
+                to_download = self.version.nStartingHeight - self.blockchain.get_height()
                 i = 1
                 for header in m.headers:
-                    self.blockchain.process_block(header)
+                    if self.blockchain.process_block(header) is None:
+                        self.callbacks["download"]()
+                        self.transport.loseConnection()
+                        return
                     if i % 50 == 0 or int((i / float(to_download))*100) == 100:
                         print "Chain download %s%% complete" % int((i / float(to_download))*100)
                     i += 1
                 if self.blockchain.get_height() < self.version.nStartingHeight:
                     self.download_blocks(self.callbacks["download"])
-                elif self.callbacks["download"]:
-                    self.timeouts["download"].cancel()
+                else:
                     self.callbacks["download"]()
 
             elif m.command == "ping":
@@ -171,13 +170,14 @@ class BitcoinProtocol(Protocol):
         except Exception, e:
             print e.message
 
-
     def on_handshake_complete(self):
         print "Connected to peer %s:%s" % (self.transport.getPeer().host, self.transport.getPeer().port)
         self.load_filter()
         self.state = State.CONNECTED
 
     def response_timeout(self, id):
+        if id == "download":
+            self.callbacks["download"]()
         del self.timeouts[id]
         for t in self.timeouts.values():
             if t.active():
@@ -192,15 +192,15 @@ class BitcoinProtocol(Protocol):
             return task.deferLater(reactor, 1, self.download_blocks)
         if self.blockchain is not None:
             print "Downloading blocks from %s:%s" % (self.transport.getPeer().host, self.transport.getPeer().port)
+            if callback:
+                self.callbacks["download"] = callback
+                self.timeouts["download"] = reactor.callLater(15, self.response_timeout, "download")
             if len(self.subscriptions) > 0:
                 get = msg_getblocks()
             else:
                 get = msg_getheaders()
             get.locator = self.blockchain.get_locator()
             get.stream_serialize(self.transport)
-            if callback:
-                self.callbacks["download"] = callback
-                self.timeouts["download"] = reactor.callLater(30, callback)
 
     def send_message(self, message_obj):
         if self.state == State.CONNECTING:

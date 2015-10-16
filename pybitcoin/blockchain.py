@@ -2,6 +2,7 @@ __author__ = 'chris'
 import sqlite3 as lite
 from bitcoin.core import CBlockHeader, CheckBlockHeader, CheckBlockHeaderError, b2lx, lx
 from bitcoin.net import CBlockLocator
+from bitcoin.core.serialize import uint256_from_compact, compact_from_uint256
 
 TESTNET_CHECKPOINT = {
     "height": 576576,
@@ -13,7 +14,7 @@ TESTNET_CHECKPOINT = {
 MAINNET_CHECKPOINT = {
     "height": 376992,
     "hash": "0000000000000000021a4323000720f49619762e302aa921f214cd8a4adbfdb4",
-    "timestamp": 1443685990,
+    "timestamp": 1443700390,
     "difficulty_target": 403838066
 }
 
@@ -116,8 +117,9 @@ class BlockDatabase(object):
                 difference = min
             elif difference > max:
                 difference = max
-            target = target * difference / (60 * 60 * 24 * 14)
-        if header.nBits < target:
+            target = compact_from_uint256(long(uint256_from_compact(target) *
+                                               (float(difference) / (60 * 60 * 24 * 14))))
+        if uint256_from_compact(header.nBits) < uint256_from_compact(target):
             raise CheckBlockHeaderError("Target difficutly is incorrect")
         return target
 
@@ -207,5 +209,6 @@ class BlockDatabase(object):
             h = self._get_parent_height(header)
             if h is not None:
                 self._commit_block(h + 1, b2lx(header.GetHash()), b2lx(header.hashPrevBlock), header.nBits, header.nTime, target)
+            return h
         except Exception, e:
             pass

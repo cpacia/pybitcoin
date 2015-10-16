@@ -44,16 +44,18 @@ class BitcoinClient(object):
                     self.peers.append(peer)
 
     def _start_chain_download(self):
-        if self.peers[0].protocol is None:
+        shuffle(self.peers)
+        if self.peers[0].protocol is None or self.peers[0].protocol.version is None:
             return task.deferLater(reactor, 1, self._start_chain_download)
         self.peers[0].protocol.download_blocks(self.check_for_more_blocks)
 
     def check_for_more_blocks(self):
         for peer in self.peers:
-            if peer.protocol.version.nStartingHeight > self.blockchain.get_height():
-                print "still more to download"
-                peer.protocol.download_blocks(self.check_for_more_blocks)
-                break
+            if peer.protocol is not None and peer.protocol.version is not None:
+                if peer.protocol.version.nStartingHeight > self.blockchain.get_height():
+                    print "Still more blocks to download"
+                    peer.protocol.download_blocks(self.check_for_more_blocks)
+                    break
 
     def _on_peer_disconnected(self, peer):
         self.peers.remove(peer)
