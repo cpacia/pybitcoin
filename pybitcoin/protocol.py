@@ -1,9 +1,9 @@
 __author__ = 'chris'
 import enum
 import bitcoin
+import time
 from twisted.internet.protocol import Protocol, ClientFactory
 from twisted.internet import reactor, task
-
 
 from bitcoin.messages import *
 from bitcoin.core import b2lx
@@ -126,6 +126,7 @@ class BitcoinProtocol(Protocol):
             elif m.command == "merkleblock":
                 if self.blockchain is not None:
                     self.blockchain.process_block(m.block)
+                    self.blockchain.save()
                     # check for block inclusion of subscribed txs
                     for match in m.block.get_matched_txs():
                         if match in self.subscriptions:
@@ -148,6 +149,7 @@ class BitcoinProtocol(Protocol):
                     self.timeouts["download"].cancel()
                 to_download = self.version.nStartingHeight - self.blockchain.get_height()
                 i = 1
+                t = time.time()
                 for header in m.headers:
                     if self.blockchain.process_block(header) is None:
                         self.callbacks["download"]()
@@ -159,6 +161,7 @@ class BitcoinProtocol(Protocol):
                 if self.blockchain.get_height() < self.version.nStartingHeight:
                     self.download_blocks(self.callbacks["download"])
                 else:
+                    self.blockchain.save()
                     self.callbacks["download"]()
 
             elif m.command == "ping":

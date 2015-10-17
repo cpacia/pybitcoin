@@ -1,4 +1,5 @@
 __author__ = 'chris'
+import os
 import sqlite3 as lite
 from bitcoin.core import CBlockHeader, CheckBlockHeader, CheckBlockHeaderError, b2lx, lx
 from bitcoin.net import CBlockLocator
@@ -32,25 +33,28 @@ class BlockDatabase(object):
     """
 
     def __init__(self, filepath, testnet=False):
-        self.db = lite.connect(filepath)
+        self.filepath = filepath
+        self.db = lite.connect(":memory:")
         self.db.text_factory = str
-        try:
-            self._create_table(testnet)
-        except Exception:
-            pass
+        self._create_database(testnet)
 
-    def _create_table(self, testnet):
+    def _create_database(self, testnet):
         cursor = self.db.cursor()
-        cursor.execute('''CREATE TABLE blocks(totalWork REAL PRIMARY KEY, height INTEGER, blockID TEXT, hashOfPrevious TEXT, timestamp INTEGER, target INTEGER)''')
-
-        cursor.execute('''CREATE INDEX blockIndx ON blocks(blockID);''')
-
-        if testnet:
-            cursor.execute('''INSERT INTO blocks(totalWork, height, blockID, hashOfPrevious, timestamp, target) VALUES (?,?,?,?,?,?)''',
-                           (0, TESTNET_CHECKPOINT["height"], TESTNET_CHECKPOINT["hash"], "", TESTNET_CHECKPOINT["timestamp"], TESTNET_CHECKPOINT["difficulty_target"]))
+        if os.path.exists(self.filepath):
+            f = open(self.filepath, "r")
+            f.seek(0)
+            cursor.executescript(f.read())
         else:
-            cursor.execute('''INSERT INTO blocks(totalWork, height, blockID, hashOfPrevious, timestamp, target) VALUES (?,?,?,?,?,?)''',
-                           (0, MAINNET_CHECKPOINT["height"], MAINNET_CHECKPOINT["hash"], "", MAINNET_CHECKPOINT["timestamp"], MAINNET_CHECKPOINT["difficulty_target"]))
+            cursor.execute('''CREATE TABLE blocks(totalWork REAL PRIMARY KEY, height INTEGER, blockID TEXT, hashOfPrevious TEXT, timestamp INTEGER, target INTEGER)''')
+
+            cursor.execute('''CREATE INDEX blockIndx ON blocks(blockID);''')
+
+            if testnet:
+                cursor.execute('''INSERT INTO blocks(totalWork, height, blockID, hashOfPrevious, timestamp, target) VALUES (?,?,?,?,?,?)''',
+                               (0, TESTNET_CHECKPOINT["height"], TESTNET_CHECKPOINT["hash"], "", TESTNET_CHECKPOINT["timestamp"], TESTNET_CHECKPOINT["difficulty_target"]))
+            else:
+                cursor.execute('''INSERT INTO blocks(totalWork, height, blockID, hashOfPrevious, timestamp, target) VALUES (?,?,?,?,?,?)''',
+                               (0, MAINNET_CHECKPOINT["height"], MAINNET_CHECKPOINT["hash"], "", MAINNET_CHECKPOINT["timestamp"], MAINNET_CHECKPOINT["difficulty_target"]))
         self.db.commit()
 
     def _commit_block(self, height, block_id, hash_of_previous, bits, timestamp, target):
@@ -212,3 +216,8 @@ class BlockDatabase(object):
             return h
         except Exception, e:
             pass
+
+    def save(self):
+        with open(self.filepath, 'w') as outfile:
+            for line in self.db.iterdump():
+                outfile.write('%s\n' % line)
