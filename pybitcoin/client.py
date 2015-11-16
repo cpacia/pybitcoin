@@ -17,7 +17,7 @@ from blockchain import BlockDatabase
 
 class BitcoinClient(object):
 
-    def __init__(self, addrs, params="mainnet", blockchain=None, user_agent="/pyBitcoin:0.1/", max_connections=10):
+    def __init__(self, addrs, params="mainnet", blockchain=None, user_agent="/pyBitcoin:0.1/", max_connections=1):
         self.addrs = addrs
         self.params = params
         self.blockchain = blockchain
@@ -113,7 +113,7 @@ class BitcoinClient(object):
             if self.subscriptions[txhash]["announced"] < self.subscriptions[txhash]["ann_threshold"]:
                 self.subscriptions[txhash]["announced"] += 1
                 if self.subscriptions[txhash]["announced"] >= self.subscriptions[txhash]["ann_threshold"]:
-                    callback(self.subscriptions[txhash]["tx"], self.subscriptions[txhash]["confirmations"])
+                    callback(self.subscriptions[txhash]["tx"], self.subscriptions[txhash]["in_blocks"], self.subscriptions[txhash]["confirmations"])
                     self.subscriptions[txhash]["last_confirmation"] = self.subscriptions[txhash]["confirmations"]
             elif self.subscriptions[txhash]["confirmations"] > self.subscriptions[txhash]["last_confirmation"]:
                 self.subscriptions[txhash]["last_confirmation"] = self.subscriptions[txhash]["confirmations"]

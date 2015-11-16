@@ -1,7 +1,6 @@
 __author__ = 'chris'
 import enum
 import bitcoin
-import time
 from twisted.internet.protocol import Protocol, ClientFactory
 from twisted.internet import reactor, task
 
@@ -149,7 +148,6 @@ class BitcoinProtocol(Protocol):
                     self.timeouts["download"].cancel()
                 to_download = self.version.nStartingHeight - self.blockchain.get_height()
                 i = 1
-                t = time.time()
                 for header in m.headers:
                     if self.blockchain.process_block(header) is None:
                         self.callbacks["download"]()
@@ -160,6 +158,7 @@ class BitcoinProtocol(Protocol):
                     i += 1
                 if self.blockchain.get_height() < self.version.nStartingHeight:
                     self.download_blocks(self.callbacks["download"])
+                    self.blockchain.save()
                 else:
                     self.blockchain.save()
                     self.callbacks["download"]()

@@ -19,6 +19,7 @@ MAINNET_CHECKPOINT = {
     "difficulty_target": 403838066
 }
 
+
 class BlockDatabase(object):
 
     """
@@ -86,7 +87,7 @@ class BlockDatabase(object):
         start = self._get_starting_height()
         end = self.get_height()
         if end - start > 5000:
-            for i in range(end-start):
+            for i in range((end-start) - 5000):
                 cursor.execute('''DELETE FROM blocks WHERE height=?''', (start+i,))
 
     def _get_parent(self, block_id):
@@ -215,6 +216,7 @@ class BlockDatabase(object):
                 self._commit_block(h + 1, b2lx(header.GetHash()), b2lx(header.hashPrevBlock), header.nBits, header.nTime, target)
             return h
         except Exception, e:
+            print e.message
             pass
 
     def save(self):
