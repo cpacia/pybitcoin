@@ -167,8 +167,7 @@ class BlockDatabase(object):
         for i in range(tip_height - block_height):
             parent = self._get_parent(parent)
 
-        parent_height = self.get_block_height(parent)
-        if parent_height == block_height:
+        if parent == b2lx(block_id):
             return tip_height - block_height + 1
         else:
             return 0
@@ -216,7 +215,6 @@ class BlockDatabase(object):
                 self._commit_block(h + 1, b2lx(header.GetHash()), b2lx(header.hashPrevBlock), header.nBits, header.nTime, target)
             return h
         except Exception, e:
-            print e.message
             pass
 
     def save(self):

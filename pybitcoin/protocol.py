@@ -1,6 +1,7 @@
 __author__ = 'chris'
 import enum
 import bitcoin
+import traceback
 from twisted.internet.protocol import Protocol, ClientFactory
 from twisted.internet import reactor, task
 
@@ -11,7 +12,7 @@ from bitcoin.wallet import CBitcoinAddress
 from extensions import msg_version2, msg_filterload, msg_merkleblock, MsgHeader
 from io import BytesIO
 
-State = enum.Enum('State', ('CONNECTING', 'CONNECTED', 'SHUTDOWN'))
+State = enum.Enum('State', ('CONNECTING', 'DOWNLOADING', 'CONNECTED', 'SHUTDOWN'))
 PROTOCOL_VERSION = 70002
 
 messagemap["merkleblock"] = msg_merkleblock
@@ -25,6 +26,7 @@ class BitcoinProtocol(Protocol):
         self.subscriptions = subscriptions
         self.bloom_filter = bloom_filter
         self.blockchain = blockchain
+        self.download_count = 1
         self.timeouts = {}
         self.callbacks = {}
         self.state = State.CONNECTING
@@ -48,6 +50,7 @@ class BitcoinProtocol(Protocol):
             stream = BytesIO(self.buffer)
             m = MsgSerializable.stream_deserialize(stream)
             self.buffer = stream.read()
+
             if m.command == "verack":
                 self.timeouts["verack"].cancel()
                 del self.timeouts["verack"]
@@ -61,6 +64,8 @@ class BitcoinProtocol(Protocol):
                 self.timeouts["version"].cancel()
                 del self.timeouts["version"]
                 msg_verack().stream_serialize(self.transport)
+                if self.blockchain is not None:
+                    self.to_download = self.version.nStartingHeight - self.blockchain.get_height()
                 if "verack" not in self.timeouts:
                     self.on_handshake_complete()
 
@@ -73,11 +78,13 @@ class BitcoinProtocol(Protocol):
 
             elif m.command == "inv":
                 for item in m.inv:
-                    # callback tx
+                    # This is either an announcement of tx we broadcast ourselves or a tx we have already downloaded.
+                    # In either case we only need to callback here.
                     if item.type == 1 and item.hash in self.subscriptions:
                         self.subscriptions[item.hash]["callback"](item.hash)
 
-                    # download tx and check subscription
+                    # This is the first time we are seeing this txid. Let's download it and check to see if it sends
+                    # coins to any addresses in our subscriptions.
                     elif item.type == 1 and item.hash not in self.inventory:
                         self.timeouts[item.hash] = reactor.callLater(5, self.response_timeout, item.hash)
 
@@ -90,8 +97,11 @@ class BitcoinProtocol(Protocol):
 
                         getdata_packet.stream_serialize(self.transport)
 
-                    # download block
+                    # The peer announced a new block. Unlike txs, we should download it, even if we've previously
+                    # downloaded it from another peer, to make sure it doesn't contain any txs we didn't know about.
                     elif item.type == 2 or item.type == 3:
+                        if self.state == State.DOWNLOADING:
+                            self.download_tracker[0] += 1
                         cinv = CInv()
                         cinv.type = 3
                         cinv.hash = item.hash
@@ -101,21 +111,35 @@ class BitcoinProtocol(Protocol):
 
                         getdata_packet.stream_serialize(self.transport)
 
-                    print "Peer %s:%s announced new %s %s" % (self.transport.getPeer().host, self.transport.getPeer().port, CInv.typemap[item.type], b2lx(item.hash))
+                    if self.state != State.DOWNLOADING:
+                        print "Peer %s:%s announced new %s %s" % (self.transport.getPeer().host, self.transport.getPeer().port, CInv.typemap[item.type], b2lx(item.hash))
 
             elif m.command == "tx":
                 if m.tx.GetHash() in self.timeouts:
                     self.timeouts[m.tx.GetHash()].cancel()
                 for out in m.tx.vout:
-                    addr = str(CBitcoinAddress.from_scriptPubKey(out.scriptPubKey))
+                    try:
+                        addr = str(CBitcoinAddress.from_scriptPubKey(out.scriptPubKey))
+                    except Exception:
+                        addr = None
+
                     if addr in self.subscriptions:
                         if m.tx.GetHash() not in self.subscriptions:
+                            # It's possible the first time we are hearing about this tx is following block
+                            # inclusion. If this is the case, let's make sure we include the correct number
+                            # of confirmations.
+                            in_blocks = self.inventory[m.tx.GetHash()] if m.tx.GetHash() in self.inventory else []
+                            confirms = []
+                            if len(in_blocks) > 0:
+                                for block in in_blocks:
+                                    confirms.append(self.blockchain.get_confirmations(block))
                             self.subscriptions[m.tx.GetHash()] = {
                                 "announced": 0,
                                 "ann_threshold": self.subscriptions[addr][0],
-                                "confirmations": 0,
+                                "confirmations": max(confirms) if len(confirms) > 0 else 0,
+                                "last_confirmation": 0,
                                 "callback": self.subscriptions[addr][1],
-                                "in_blocks": self.inventory[m.tx.GetHash()] if m.tx.GetHash() in self.inventory else [],
+                                "in_blocks": in_blocks,
                                 "tx": m.tx
                             }
                             self.subscriptions[addr][1](m.tx.GetHash())
@@ -125,43 +149,70 @@ class BitcoinProtocol(Protocol):
             elif m.command == "merkleblock":
                 if self.blockchain is not None:
                     self.blockchain.process_block(m.block)
-                    self.blockchain.save()
+                    if self.state != State.DOWNLOADING:
+                        self.blockchain.save()
                     # check for block inclusion of subscribed txs
                     for match in m.block.get_matched_txs():
                         if match in self.subscriptions:
                             self.subscriptions[match]["in_blocks"].append(m.block.GetHash())
                         else:
-                            # stick the hash here in case this is a tx we missed on broadcast.
+                            # stick the hash here in case this is the first we are hearing about this tx.
                             # when the tx comes over the wire after this block, we will append this hash.
                             self.inventory[match] = [m.block.GetHash()]
                     # run through subscriptions and callback with updated confirmations
                     for txid in self.subscriptions:
-                        if len(txid) == 32:
+                        try:
                             confirms = []
                             for block in self.subscriptions[txid]["in_blocks"]:
                                 confirms.append(self.blockchain.get_confirmations(block))
                             self.subscriptions[txid]["confirmations"] = max(confirms)
                             self.subscriptions[txid]["callback"](txid)
+                        except Exception:
+                            pass
+
+                    # If we are in the middle of an initial chain download, let's check to see if we have
+                    # either reached the end of the download or if we need to loop back around and make
+                    # another get_blocks call.
+                    if self.state == State.DOWNLOADING:
+                        if self.download_count % 50 == 0 or int((self.download_count / float(self.to_download))*100) == 100:
+                            print "Chain download %s%% complete" % int((self.download_count / float(self.to_download))*100)
+                        self.download_count += 1
+                        self.download_tracker[1] += 1
+                        # We've downloaded every block in the inv packet and still have more to go.
+                        if (self.download_tracker[0] == self.download_tracker[1] and
+                           self.blockchain.get_height() < self.version.nStartingHeight):
+                            if self.timeouts["download"].active():
+                                self.timeouts["download"].cancel()
+                            self.download_blocks(self.callbacks["download"])
+                        # We've downloaded everything so let's callback to the client.
+                        elif self.blockchain.get_height() >= self.version.nStartingHeight:
+                            self.blockchain.save()
+                            self.state = State.CONNECTED
+                            self.callbacks["download"]()
+                            if self.timeouts["download"].active():
+                                self.timeouts["download"].cancel()
 
             elif m.command == "headers":
                 if self.timeouts["download"].active():
                     self.timeouts["download"].cancel()
-                to_download = self.version.nStartingHeight - self.blockchain.get_height()
-                i = 1
                 for header in m.headers:
+                    # If this node sent a block with no parent then disconnect from it and callback
+                    # on client.check_for_more_blocks.
                     if self.blockchain.process_block(header) is None:
                         self.callbacks["download"]()
                         self.transport.loseConnection()
                         return
-                    if i % 50 == 0 or int((i / float(to_download))*100) == 100:
-                        print "Chain download %s%% complete" % int((i / float(to_download))*100)
-                    i += 1
+                    if self.download_count % 50 == 0 or int((self.download_count / float(self.to_download))*100) == 100:
+                        print "Chain download %s%% complete" % int((self.download_count / float(self.to_download))*100)
+                    self.download_count += 1
+                # The headers message only comes in batches of 500 blocks. If we still have more blocks to download
+                # loop back around and call get_headers again.
                 if self.blockchain.get_height() < self.version.nStartingHeight:
                     self.download_blocks(self.callbacks["download"])
-                    self.blockchain.save()
                 else:
                     self.blockchain.save()
                     self.callbacks["download"]()
+                    self.state = State.CONNECTED
 
             elif m.command == "ping":
                 msg_pong(nonce=m.nonce).stream_serialize(self.transport)
@@ -169,9 +220,9 @@ class BitcoinProtocol(Protocol):
             else:
                 print "Received message %s from %s:%s" % (m.command, self.transport.getPeer().host, self.transport.getPeer().port)
 
-            if len(self.buffer) > 0: self.dataReceived("")
-        except Exception, e:
-            print e.message
+            if len(self.buffer) >= 24: self.dataReceived("")
+        except Exception:
+            traceback.print_exc()
 
     def on_handshake_complete(self):
         print "Connected to peer %s:%s" % (self.transport.getPeer().host, self.transport.getPeer().port)
@@ -190,16 +241,17 @@ class BitcoinProtocol(Protocol):
         self.transport.loseConnection()
         self.state = State.SHUTDOWN
 
-    def download_blocks(self, callback=None):
+    def download_blocks(self, callback):
         if self.state == State.CONNECTING:
-            return task.deferLater(reactor, 1, self.download_blocks)
+            return task.deferLater(reactor, 1, self.download_blocks, callback)
         if self.blockchain is not None:
             print "Downloading blocks from %s:%s" % (self.transport.getPeer().host, self.transport.getPeer().port)
-            if callback:
-                self.callbacks["download"] = callback
-                self.timeouts["download"] = reactor.callLater(15, self.response_timeout, "download")
+            self.state = State.DOWNLOADING
+            self.callbacks["download"] = callback
+            self.timeouts["download"] = reactor.callLater(30, self.response_timeout, "download")
             if len(self.subscriptions) > 0:
                 get = msg_getblocks()
+                self.download_tracker = [0, 0]
             else:
                 get = msg_getheaders()
             get.locator = self.blockchain.get_locator()

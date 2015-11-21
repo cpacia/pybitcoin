@@ -17,22 +17,29 @@ from blockchain import BlockDatabase
 
 class BitcoinClient(object):
 
-    def __init__(self, addrs, params="mainnet", blockchain=None, user_agent="/pyBitcoin:0.1/", max_connections=1):
+    def __init__(self, addrs, params="mainnet", blockchain=None, user_agent="/pyBitcoin:0.1/", max_connections=10, subscriptions=[]):
         self.addrs = addrs
         self.params = params
         self.blockchain = blockchain
         self.user_agent = user_agent
         self.max_connections = max_connections
+        self.testnet = True if params == "testnet" else False
         self.peers = []
         self.inventory = {}
         self.pending_txs = {}
         self.subscriptions = {}
-        self.bloom_filter = BloomFilter(10, 0.1, random.getrandbits(32), BloomFilter.UPDATE_NONE)
+        self.bloom_filter = BloomFilter(10, 0.001, random.getrandbits(32), BloomFilter.UPDATE_NONE)
+        for s in subscriptions:
+            self.subscribe_address(s[0], s[1])
         self._connect_to_peers()
         if self.blockchain: self._start_chain_download()
         bitcoin.SelectParams(params)
 
     def _connect_to_peers(self):
+        """
+        Will attempt to connect to enough peers to get us up to `max_connections`. This should be called
+        again after we disconnect from a peer to maintain a stable number of peers.
+        """
         if len(self.peers) < self.max_connections:
             shuffle(self.addrs)
             for i in range(self.max_connections - len(self.peers)):
@@ -42,14 +49,26 @@ class BitcoinClient(object):
                                        self.bloom_filter, self._on_peer_disconnected, self.blockchain)
                     reactor.connectTCP(addr[0], addr[1], peer)
                     self.peers.append(peer)
+                else:
+                    # We ran out of addresses and need to hit up the seeds again.
+                    self.addrs = dns_discovery(self.testnet)
+                    self._connect_to_peers()
 
     def _start_chain_download(self):
+        """
+        Pick a single peer and download the headers/merkle blocks from it until we are at the tip of the chain.
+        If the peer isn't fully initialized yet, let's pause a second and try again.
+        """
         shuffle(self.peers)
         if self.peers[0].protocol is None or self.peers[0].protocol.version is None:
             return task.deferLater(reactor, 1, self._start_chain_download)
         self.peers[0].protocol.download_blocks(self.check_for_more_blocks)
 
     def check_for_more_blocks(self):
+        """
+        After we finish downloading blocks from our download peer let's check to see if any of our other peers
+        know about any additional blocks. If so, let's download from them as well.
+        """
         for peer in self.peers:
             if peer.protocol is not None and peer.protocol.version is not None:
                 if peer.protocol.version.nStartingHeight > self.blockchain.get_height():
@@ -106,11 +125,12 @@ class BitcoinClient(object):
     def subscribe_address(self, address, callback):
         """
         Listen on an address for transactions. Since we can't validate unconfirmed
-        txs we will only callback if the tx is announced by a majority of our peers.
+        txs we will only callback if the tx is announced by a majority of our peers
+        or included in a block.
         """
 
         def on_peer_announce(txhash):
-            if self.subscriptions[txhash]["announced"] < self.subscriptions[txhash]["ann_threshold"]:
+            if self.subscriptions[txhash]["announced"] < self.subscriptions[txhash]["ann_threshold"] and self.subscriptions[txhash]["confirmations"] == 0:
                 self.subscriptions[txhash]["announced"] += 1
                 if self.subscriptions[txhash]["announced"] >= self.subscriptions[txhash]["ann_threshold"]:
                     callback(self.subscriptions[txhash]["tx"], self.subscriptions[txhash]["in_blocks"], self.subscriptions[txhash]["confirmations"])
@@ -122,7 +142,8 @@ class BitcoinClient(object):
         self.subscriptions[address] = (len(self.peers)/2, on_peer_announce)
         self.bloom_filter.insert(base58.decode(address)[1:21])
         for peer in self.peers:
-            peer.protocol.load_filter()
+            if peer.protocol is not None:
+                peer.protocol.load_filter()
 
     def unsubscribe_address(self, address):
         """
@@ -132,12 +153,13 @@ class BitcoinClient(object):
         if address in self.subscriptions:
             self.bloom_filter.remove(base58.decode(address)[1:21])
             for peer in self.peers:
-                peer.protocol.load_filter()
+                if peer.protocol is not None:
+                    peer.protocol.load_filter()
             del self.subscriptions[address]
 
 
 if __name__ == "__main__":
     # Connect to testnet
-    bd = BlockDatabase("blocks.db", testnet=True)
-    BitcoinClient(dns_discovery(True), params="testnet", blockchain=bd)
+    bd = BlockDatabase("blocks.db", testnet=False)
+    BitcoinClient(dns_discovery(False), params="mainnet", blockchain=bd)
     reactor.run()
