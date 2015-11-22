@@ -1,5 +1,9 @@
 __author__ = 'chris'
+"""
+Copyright (c) 2015 Chris Pacia
+"""
 import dns.resolver
+from log import Logger
 
 TESTNET3_SEEDS = [
     "testnet-seed.bitcoin.schildbach.de",
@@ -16,10 +20,11 @@ MAINNET_SEEDS = [
 
 
 def dns_discovery(testnet=False):
+    log = Logger(system="Discovery")
     addrs = []
     for seed in TESTNET3_SEEDS if testnet else MAINNET_SEEDS:
         answers = dns.resolver.query(seed)
         for addr in answers:
             addrs.append((str(addr), 18333 if testnet else 8333))
-    print "DNS discovery returned %s peers" % len(addrs)
+    log.info("DNS discovery returned %s peers" % len(addrs))
     return addrs

@@ -1,4 +1,7 @@
 __author__ = 'chris'
+"""
+Copyright (c) 2015 Chris Pacia
+"""
 import random
 import struct
 import bitcoin
@@ -264,6 +267,7 @@ class CMerkleBlock(CBlockHeader):
             _cached_GetHash = self.get_header().GetHash()
             object.__setattr__(self, '_cached_GetHash', _cached_GetHash)
             return _cached_GetHash
+
 
 class msg_merkleblock(MsgSerializable):
     """

@@ -1,4 +1,7 @@
 __author__ = 'chris'
+"""
+Copyright (c) 2015 Chris Pacia
+"""
 import os
 import sqlite3 as lite
 from bitcoin.core import CBlockHeader, CheckBlockHeader, CheckBlockHeaderError, b2lx, lx
@@ -6,10 +9,10 @@ from bitcoin.net import CBlockLocator
 from bitcoin.core.serialize import uint256_from_compact, compact_from_uint256
 
 TESTNET_CHECKPOINT = {
-    "height": 576576,
-    "hash": "000000000000204500050ea47622bdd55a30c7c9eab4fc42b5ffc9128fa08370",
-    "timestamp": 1444142008,
-    "difficulty_target": 439683892
+    "height": 606816,
+    "hash": "00000000000004e40b0b4ae327ecb4532d986542a3d609a3378e7fe576d2f010",
+    "timestamp": 1448160074,
+    "difficulty_target": 436542988
 }
 
 MAINNET_CHECKPOINT = {
@@ -34,6 +37,7 @@ class BlockDatabase(object):
     """
 
     def __init__(self, filepath, testnet=False):
+        self.testnet = testnet
         self.filepath = filepath
         self.db = lite.connect(":memory:")
         self.db.text_factory = str
@@ -122,9 +126,10 @@ class BlockDatabase(object):
                 difference = min
             elif difference > max:
                 difference = max
-            target = compact_from_uint256(long(uint256_from_compact(target) *
-                                               (float(difference) / (60 * 60 * 24 * 14))))
-        if uint256_from_compact(header.nBits) < uint256_from_compact(target):
+            target = compact_from_uint256(long(uint256_from_compact(target) * (float(difference) / (60 * 60 * 24 * 14))))
+        if self.testnet and header.nTime - self.get_timestamp(parent) >= 1200:
+            return target
+        if uint256_from_compact(header.nBits) > uint256_from_compact(target):
             raise CheckBlockHeaderError("Target difficutly is incorrect")
         return target
 
@@ -174,7 +179,7 @@ class BlockDatabase(object):
 
     def get_locator(self):
         """
-        Get a block locator object to give our remote peer when fetching headers.
+        Get a block locator object to give our remote peer when fetching headers/merkle blocks.
         """
 
         locator = CBlockLocator()

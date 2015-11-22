@@ -1,4 +1,7 @@
 __author__ = 'chris'
+"""
+Copyright (c) 2015 Chris Pacia
+"""
 import bitcoin
 import random
 from io import BytesIO
@@ -13,6 +16,8 @@ from bitcoin.net import CInv
 from bitcoin.messages import msg_inv
 from bitcoin import base58
 from blockchain import BlockDatabase
+from log import *
+from twisted.python import log, logfile
 
 
 class BitcoinClient(object):
@@ -72,7 +77,6 @@ class BitcoinClient(object):
         for peer in self.peers:
             if peer.protocol is not None and peer.protocol.version is not None:
                 if peer.protocol.version.nStartingHeight > self.blockchain.get_height():
-                    print "Still more blocks to download"
                     peer.protocol.download_blocks(self.check_for_more_blocks)
                     break
 
@@ -160,6 +164,8 @@ class BitcoinClient(object):
 
 if __name__ == "__main__":
     # Connect to testnet
-    bd = BlockDatabase("blocks.db", testnet=False)
-    BitcoinClient(dns_discovery(False), params="mainnet", blockchain=bd)
+    logFile = logfile.LogFile.fromFullPath("bitcoin.log", rotateLength=15000000, maxRotatedFiles=1)
+    log.addObserver(FileLogObserver(logFile).emit)
+    bd = BlockDatabase("blocks.db", testnet=True)
+    BitcoinClient(dns_discovery(True), params="testnet", blockchain=bd)
     reactor.run()

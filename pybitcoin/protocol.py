@@ -1,4 +1,7 @@
 __author__ = 'chris'
+"""
+Copyright (c) 2015 Chris Pacia
+"""
 import enum
 import bitcoin
 import traceback
@@ -11,6 +14,7 @@ from bitcoin.net import CInv
 from bitcoin.wallet import CBitcoinAddress
 from extensions import msg_version2, msg_filterload, msg_merkleblock, MsgHeader
 from io import BytesIO
+from log import Logger
 
 State = enum.Enum('State', ('CONNECTING', 'DOWNLOADING', 'CONNECTED', 'SHUTDOWN'))
 PROTOCOL_VERSION = 70002
@@ -27,11 +31,13 @@ class BitcoinProtocol(Protocol):
         self.bloom_filter = bloom_filter
         self.blockchain = blockchain
         self.download_count = 1
+        self.download_tracker = [0, 0]
         self.timeouts = {}
         self.callbacks = {}
         self.state = State.CONNECTING
         self.version = None
         self.buffer = ""
+        self.log = Logger(system=self)
 
     def connectionMade(self):
         """
@@ -112,7 +118,7 @@ class BitcoinProtocol(Protocol):
                         getdata_packet.stream_serialize(self.transport)
 
                     if self.state != State.DOWNLOADING:
-                        print "Peer %s:%s announced new %s %s" % (self.transport.getPeer().host, self.transport.getPeer().port, CInv.typemap[item.type], b2lx(item.hash))
+                        self.log.debug("Peer %s:%s announced new %s %s" % (self.transport.getPeer().host, self.transport.getPeer().port, CInv.typemap[item.type], b2lx(item.hash)))
 
             elif m.command == "tx":
                 if m.tx.GetHash() in self.timeouts:
@@ -175,7 +181,10 @@ class BitcoinProtocol(Protocol):
                     # another get_blocks call.
                     if self.state == State.DOWNLOADING:
                         if self.download_count % 50 == 0 or int((self.download_count / float(self.to_download))*100) == 100:
-                            print "Chain download %s%% complete" % int((self.download_count / float(self.to_download))*100)
+                            # TODO: let's update to a chain download listener here.
+                            percent = int((self.download_count / float(self.to_download))*100)
+                            if percent == 100:
+                                self.log.info("Chain download 100% complete")
                         self.download_count += 1
                         self.download_tracker[1] += 1
                         # We've downloaded every block in the inv packet and still have more to go.
@@ -199,11 +208,15 @@ class BitcoinProtocol(Protocol):
                     # If this node sent a block with no parent then disconnect from it and callback
                     # on client.check_for_more_blocks.
                     if self.blockchain.process_block(header) is None:
+                        self.blockchain.save()
                         self.callbacks["download"]()
                         self.transport.loseConnection()
                         return
                     if self.download_count % 50 == 0 or int((self.download_count / float(self.to_download))*100) == 100:
-                        print "Chain download %s%% complete" % int((self.download_count / float(self.to_download))*100)
+                        # TODO: let's update to a chain download listener here.
+                        percent = int((self.download_count / float(self.to_download))*100)
+                        if percent == 100:
+                            self.log.info("Chain download 100% complete")
                     self.download_count += 1
                 # The headers message only comes in batches of 500 blocks. If we still have more blocks to download
                 # loop back around and call get_headers again.
@@ -218,14 +231,14 @@ class BitcoinProtocol(Protocol):
                 msg_pong(nonce=m.nonce).stream_serialize(self.transport)
 
             else:
-                print "Received message %s from %s:%s" % (m.command, self.transport.getPeer().host, self.transport.getPeer().port)
+                self.log.debug("Received message %s from %s:%s" % (m.command, self.transport.getPeer().host, self.transport.getPeer().port))
 
             if len(self.buffer) >= 24: self.dataReceived("")
         except Exception:
             traceback.print_exc()
 
     def on_handshake_complete(self):
-        print "Connected to peer %s:%s" % (self.transport.getPeer().host, self.transport.getPeer().port)
+        self.log.info("Connected to peer %s:%s" % (self.transport.getPeer().host, self.transport.getPeer().port))
         self.load_filter()
         self.state = State.CONNECTED
 
@@ -237,7 +250,7 @@ class BitcoinProtocol(Protocol):
             if t.active():
                 t.cancel()
         if self.state != State.SHUTDOWN:
-            print "Peer %s:%s unresponsive, disconnecting..." % (self.transport.getPeer().host, self.transport.getPeer().port)
+            self.log.warning("Peer %s:%s unresponsive, disconnecting..." % (self.transport.getPeer().host, self.transport.getPeer().port))
         self.transport.loseConnection()
         self.state = State.SHUTDOWN
 
@@ -245,7 +258,7 @@ class BitcoinProtocol(Protocol):
         if self.state == State.CONNECTING:
             return task.deferLater(reactor, 1, self.download_blocks, callback)
         if self.blockchain is not None:
-            print "Downloading blocks from %s:%s" % (self.transport.getPeer().host, self.transport.getPeer().port)
+            self.log.info("Downloading blocks from %s:%s" % (self.transport.getPeer().host, self.transport.getPeer().port))
             self.state = State.DOWNLOADING
             self.callbacks["download"] = callback
             self.timeouts["download"] = reactor.callLater(30, self.response_timeout, "download")
@@ -267,7 +280,7 @@ class BitcoinProtocol(Protocol):
 
     def connectionLost(self, reason):
         self.state = State.SHUTDOWN
-        print "Connection to %s:%s closed" % (self.transport.getPeer().host, self.transport.getPeer().port)
+        self.log.info("Connection to %s:%s closed" % (self.transport.getPeer().host, self.transport.getPeer().port))
 
 
 class PeerFactory(ClientFactory):
@@ -288,7 +301,7 @@ class PeerFactory(ClientFactory):
         return self.protocol
 
     def clientConnectionFailed(self, connector, reason):
-        print "Connection failed, will try a different node"
+        self.log.warning("Connection failed, will try a different node")
         self.cb(self)
 
     def clientConnectionLost(self, connector, reason):
