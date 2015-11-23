@@ -15,7 +15,7 @@ levels = {"debug": 5, "warning": 4, "info": 3, "error": 2, "critical": 1}
 
 
 class FileLogObserver(log.FileLogObserver):
-    def __init__(self, f=None, level="debug", default=DEBUG):
+    def __init__(self, f=None, level="info", default=DEBUG):
         log.FileLogObserver.__init__(self, f or sys.stdout)
         self.level = levels[level]
         self.default = default

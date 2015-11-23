@@ -18,11 +18,14 @@ from bitcoin import base58
 from blockchain import BlockDatabase
 from log import *
 from twisted.python import log, logfile
+from zope.interface.verify import verifyObject
+from zope.interface.exceptions import DoesNotImplement
+from listeners import DownloadListener, PeerEventListener
 
 
 class BitcoinClient(object):
 
-    def __init__(self, addrs, params="mainnet", blockchain=None, user_agent="/pyBitcoin:0.1/", max_connections=10, subscriptions=[]):
+    def __init__(self, addrs, params="mainnet", blockchain=None, user_agent="/pyBitcoin:0.1/", max_connections=10, subscriptions=[], listeners=[]):
         self.addrs = addrs
         self.params = params
         self.blockchain = blockchain
@@ -34,11 +37,30 @@ class BitcoinClient(object):
         self.pending_txs = {}
         self.subscriptions = {}
         self.bloom_filter = BloomFilter(10, 0.001, random.getrandbits(32), BloomFilter.UPDATE_NONE)
+        self.download_listener = None
+        self.peer_event_listener = None
         for s in subscriptions:
             self.subscribe_address(s[0], s[1])
+        for l in listeners:
+            self.add_event_listener(l)
         self._connect_to_peers()
         if self.blockchain: self._start_chain_download()
         bitcoin.SelectParams(params)
+
+    def add_event_listener(self, listener):
+        try:
+            verifyObject(DownloadListener, listener)
+            self.download_listener = listener
+            for peer in self.peers:
+                if peer.protocol is not None:
+                    peer.protocol.download_listener = listener
+        except DoesNotImplement:
+            pass
+        try:
+            verifyObject(PeerEventListener, listener)
+            self.peer_event_listener = listener
+        except DoesNotImplement:
+            pass
 
     def _connect_to_peers(self):
         """
@@ -51,13 +73,18 @@ class BitcoinClient(object):
                 if len(self.addrs) > 0:
                     addr = self.addrs.pop(0)
                     peer = PeerFactory(self.params, self.user_agent, self.inventory, self.subscriptions,
-                                       self.bloom_filter, self._on_peer_disconnected, self.blockchain)
+                                       self.bloom_filter, self._on_peer_disconnected, self.blockchain, self.download_listener)
                     reactor.connectTCP(addr[0], addr[1], peer)
                     self.peers.append(peer)
+                    if self.peer_event_listener is not None:
+                        self.peer_event_listener.on_peer_connected(addr, len(self.peers))
                 else:
                     # We ran out of addresses and need to hit up the seeds again.
                     self.addrs = dns_discovery(self.testnet)
                     self._connect_to_peers()
+
+    def get_peer_count(self):
+        return len(self.peers)
 
     def _start_chain_download(self):
         """
@@ -81,6 +108,9 @@ class BitcoinClient(object):
                     break
 
     def _on_peer_disconnected(self, peer):
+        if self.peer_event_listener is not None:
+            ip = (peer.protocol.transport.getPeer().host, peer.protocol.transport.getPeer().port)
+            self.peer_event_listener.on_peer_disconnected(ip, len(self.peers))
         self.peers.remove(peer)
         self._connect_to_peers()
 
@@ -166,6 +196,7 @@ if __name__ == "__main__":
     # Connect to testnet
     logFile = logfile.LogFile.fromFullPath("bitcoin.log", rotateLength=15000000, maxRotatedFiles=1)
     log.addObserver(FileLogObserver(logFile).emit)
+    log.addObserver(FileLogObserver().emit)
     bd = BlockDatabase("blocks.db", testnet=True)
     BitcoinClient(dns_discovery(True), params="testnet", blockchain=bd)
     reactor.run()

@@ -26,7 +26,7 @@ MAINNET_CHECKPOINT = {
 class BlockDatabase(object):
 
     """
-    This class maintains a database of block headers needed to prove a transaction exists in the blockchain. It's
+    This class maintains a database of block headers needed to prove a transaction exists in the blockchain. Its
     primary key is total difficulty, hence the last entry in the database should be the tip of the chain. When a new
     block is passed into `process_block` we validate it, look up it's parent in the chain (reject if no parent exists),
     add the difficulty of the block to the cumulative difficulty of the parent, and insert into the database at the

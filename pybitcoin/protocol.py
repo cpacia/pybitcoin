@@ -24,14 +24,15 @@ messagemap["merkleblock"] = msg_merkleblock
 
 class BitcoinProtocol(Protocol):
 
-    def __init__(self, user_agent, inventory, subscriptions, bloom_filter, blockchain):
+    def __init__(self, user_agent, inventory, subscriptions, bloom_filter, blockchain, download_listener):
         self.user_agent = user_agent
         self.inventory = inventory
         self.subscriptions = subscriptions
         self.bloom_filter = bloom_filter
         self.blockchain = blockchain
-        self.download_count = 1
+        self.download_count = 0
         self.download_tracker = [0, 0]
+        self.download_listener = download_listener
         self.timeouts = {}
         self.callbacks = {}
         self.state = State.CONNECTING
@@ -180,12 +181,15 @@ class BitcoinProtocol(Protocol):
                     # either reached the end of the download or if we need to loop back around and make
                     # another get_blocks call.
                     if self.state == State.DOWNLOADING:
-                        if self.download_count % 50 == 0 or int((self.download_count / float(self.to_download))*100) == 100:
-                            # TODO: let's update to a chain download listener here.
-                            percent = int((self.download_count / float(self.to_download))*100)
-                            if percent == 100:
-                                self.log.info("Chain download 100% complete")
                         self.download_count += 1
+                        percent = int((self.download_count / float(self.to_download))*100)
+                        if self.download_listener is not None:
+                            self.download_listener.progress(percent, self.download_count)
+                            self.download_listener.on_block_downloaded((self.transport.getPeer().host, self.transport.getPeer().port), header, self.to_download - self.download_count + 1)
+                        if percent == 100:
+                            if self.download_listener is not None:
+                                self.download_listener.download_complete()
+                            self.log.info("Chain download 100% complete")
                         self.download_tracker[1] += 1
                         # We've downloaded every block in the inv packet and still have more to go.
                         if (self.download_tracker[0] == self.download_tracker[1] and
@@ -212,12 +216,15 @@ class BitcoinProtocol(Protocol):
                         self.callbacks["download"]()
                         self.transport.loseConnection()
                         return
-                    if self.download_count % 50 == 0 or int((self.download_count / float(self.to_download))*100) == 100:
-                        # TODO: let's update to a chain download listener here.
-                        percent = int((self.download_count / float(self.to_download))*100)
-                        if percent == 100:
-                            self.log.info("Chain download 100% complete")
                     self.download_count += 1
+                    percent = int((self.download_count / float(self.to_download))*100)
+                    if self.download_listener is not None:
+                        self.download_listener.progress(percent, self.download_count)
+                        self.download_listener.on_block_downloaded((self.transport.getPeer().host, self.transport.getPeer().port), header, self.to_download - self.download_count + 1)
+                    if percent == 100:
+                        if self.download_listener is not None:
+                            self.download_listener.download_complete()
+                        self.log.info("Chain download 100% complete")
                 # The headers message only comes in batches of 500 blocks. If we still have more blocks to download
                 # loop back around and call get_headers again.
                 if self.blockchain.get_height() < self.version.nStartingHeight:
@@ -258,6 +265,8 @@ class BitcoinProtocol(Protocol):
         if self.state == State.CONNECTING:
             return task.deferLater(reactor, 1, self.download_blocks, callback)
         if self.blockchain is not None:
+            if self.download_listener is not None and self.download_count == 0:
+                self.download_listener.download_started((self.transport.getPeer().host, self.transport.getPeer().port), self.to_download)
             self.log.info("Downloading blocks from %s:%s" % (self.transport.getPeer().host, self.transport.getPeer().port))
             self.state = State.DOWNLOADING
             self.callbacks["download"] = callback
@@ -285,7 +294,7 @@ class BitcoinProtocol(Protocol):
 
 class PeerFactory(ClientFactory):
 
-    def __init__(self, params, user_agent, inventory, subscriptions, bloom_filter, disconnect_cb, blockchain):
+    def __init__(self, params, user_agent, inventory, subscriptions, bloom_filter, disconnect_cb, blockchain, download_listener):
         self.params = params
         self.user_agent = user_agent
         self.inventory = inventory
@@ -294,10 +303,12 @@ class PeerFactory(ClientFactory):
         self.cb = disconnect_cb
         self.protocol = None
         self.blockchain = blockchain
+        self.download_listener = download_listener
         bitcoin.SelectParams(params)
+        self.log = Logger(system=self)
 
     def buildProtocol(self, addr):
-        self.protocol = BitcoinProtocol(self.user_agent, self.inventory, self.subscriptions, self.bloom_filter, self.blockchain)
+        self.protocol = BitcoinProtocol(self.user_agent, self.inventory, self.subscriptions, self.bloom_filter, self.blockchain, self.download_listener)
         return self.protocol
 
     def clientConnectionFailed(self, connector, reason):
